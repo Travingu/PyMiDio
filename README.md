@@ -1,0 +1,1 @@
+go to terminal and run python piano_detector_ui.py (for windows idk about mac)
