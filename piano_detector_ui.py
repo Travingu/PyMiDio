@@ -128,18 +128,15 @@ class ProcessingThread(QThread):
             if os.path.exists(tmp_wav):
                 os.unlink(tmp_wav)
             self.finished.emit()
-
-    def run_transkun(self, wav_path, midi_out_path, device="cpu"):
-        cmd = [
-            sys.executable, "-m", "transkun.transcribe",
-            wav_path, midi_out_path,
-            "--device", device
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            self.error_occurred.emit(f"Transkun error:\n{result.stderr}")
-            return False
+            
+def run_transkun(self, wav_path, midi_out_path, device="cpu"):
+    try:
+        from transkun.transcribe import transcribeFile
+        transcribeFile(wav_path, midi_out_path, device=device)
         return True
+    except Exception as e:
+        self.error_occurred.emit(f"Transkun error: {str(e)}")
+        return False
 
     def apply_fixed_velocity(self, midi_path, velocity):
         try:

@@ -1,2 +1,6 @@
 # ignores midi files
 *.mid
+
+piano_detector_ui.build/
+piano_detector_ui.dist/
+piano_detector_ui.onefile-build/
