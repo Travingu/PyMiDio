@@ -72,13 +72,14 @@ class ProcessingThread(QThread):
     error_occurred = pyqtSignal(str)
     finished = pyqtSignal()
 
-    def __init__(self, audio, device, save_midi, fixed_velocity=None, fixed_pitch_bend=None):
+    def __init__(self, audio, device, save_midi, fixed_velocity=None, fixed_pitch_bend=None, extend=False):
         super().__init__()
         self.audio = audio
         self.device = device
         self.save_midi = save_midi
         self.fixed_velocity = fixed_velocity
         self.fixed_pitch_bend = fixed_pitch_bend
+        self.extend = extend
 
     def run(self):
         if len(self.audio) == 0:
@@ -103,11 +104,9 @@ class ProcessingThread(QThread):
 
             self.status_update.emit("Transcription complete!")
 
-            # Apply fixed velocity if selected
             if self.fixed_velocity is not None:
                 self.apply_fixed_velocity(midi_path, self.fixed_velocity)
 
-            # Apply fixed pitch bend if selected
             if self.fixed_pitch_bend is not None:
                 self.apply_fixed_pitch_bend(midi_path, self.fixed_pitch_bend)
 
@@ -116,11 +115,11 @@ class ProcessingThread(QThread):
 
             if self.save_midi:
                 self.result_ready.emit(f"\nMIDI saved to: {midi_path}")
-                self.result_ready.emit(f"Open {midi_path} in GarageBand, Logic, or MuseScore.")
+                self.result_ready.emit("Open it in GarageBand, Logic, or MuseScore.")
             else:
                 if os.path.exists(midi_path):
                     os.unlink(midi_path)
-                    self.result_ready.emit("\nMIDI file removed.")
+                self.result_ready.emit("\nMIDI file removed.")
 
         except Exception as e:
             self.error_occurred.emit(f"Error: {str(e)}")
@@ -128,30 +127,36 @@ class ProcessingThread(QThread):
             if os.path.exists(tmp_wav):
                 os.unlink(tmp_wav)
             self.finished.emit()
-            
-def run_transkun(self, wav_path, midi_out_path, device="cpu"):
-    try:
-        from transkun.transcribe import transcribeFile
-        transcribeFile(wav_path, midi_out_path, device=device)
-        return True
-    except Exception as e:
-        self.error_occurred.emit(f"Transkun error: {str(e)}")
-        return False
+
+    def run_transkun(self, wav_path, midi_out_path, device="cpu"):
+        try:
+            import shutil
+            transkun_exe = shutil.which("transkun")
+            if transkun_exe is None:
+                self.error_occurred.emit("Transkun executable not found. Make sure it is installed.")
+                return False
+
+            cmd = [transkun_exe, wav_path, midi_out_path, "--device", device]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                self.error_occurred.emit(f"Transkun error:\n{result.stderr}")
+                return False
+            return True
+        except Exception as e:
+            self.error_occurred.emit(f"Transkun error: {str(e)}")
+            return False
 
     def apply_fixed_velocity(self, midi_path, velocity):
         try:
             import mido
         except ImportError:
-            self.error_occurred.emit("Install mido to modify velocity: pip install mido")
+            self.error_occurred.emit("Install mido: pip install mido")
             return
-
         mid = mido.MidiFile(midi_path)
         for track in mid.tracks:
             for msg in track:
                 if msg.type == "note_on" and msg.velocity > 0:
                     msg.velocity = velocity
-                elif msg.type == "note_off":
-                    pass  # Keep note_off as is
         mid.save(midi_path)
         self.result_ready.emit(f"Applied fixed velocity: {velocity}")
 
@@ -159,25 +164,15 @@ def run_transkun(self, wav_path, midi_out_path, device="cpu"):
         try:
             import mido
         except ImportError:
-            self.error_occurred.emit("Install mido to modify pitch bend: pip install mido")
+            self.error_occurred.emit("Install mido: pip install mido")
             return
-
         mid = mido.MidiFile(midi_path)
         for track in mid.tracks:
-            # Remove existing pitch bend messages
-            messages_to_remove = []
-            for i, msg in enumerate(track):
-                if msg.type == "pitchwheel":
-                    messages_to_remove.append(i)
-            
-            # Remove in reverse order to maintain indices
-            for i in reversed(messages_to_remove):
-                track.pop(i)
-            
-            # Add fixed pitch bend at the start of each track
+            for i in reversed(range(len(track))):
+                if track[i].type == "pitchwheel":
+                    track.pop(i)
             if len(track) > 0:
                 track.insert(0, mido.Message('pitchwheel', pitch=pitch_bend, time=0))
-        
         mid.save(midi_path)
         self.result_ready.emit(f"Applied fixed pitch bend: {pitch_bend}")
 
@@ -185,7 +180,7 @@ def run_transkun(self, wav_path, midi_out_path, device="cpu"):
         try:
             import mido
         except ImportError:
-            self.error_occurred.emit("Install mido to print note events: pip install mido")
+            self.error_occurred.emit("Install mido: pip install mido")
             return []
 
         mid = mido.MidiFile(midi_path)
@@ -193,7 +188,6 @@ def run_transkun(self, wav_path, midi_out_path, device="cpu"):
         tempo = 500000
         ticks_per_beat = mid.ticks_per_beat
         active = {}
-        current_tick = 0
 
         for track in mid.tracks:
             current_tick = 0
@@ -221,14 +215,12 @@ def run_transkun(self, wav_path, midi_out_path, device="cpu"):
             self.result_ready.emit("No notes detected.")
             return
 
-        header = f"{'Start':>7}  {'End':>7}  {'Note':<6}  {'MIDI':>4}  {'Velocity':>8}"
-        self.result_ready.emit(header)
+        self.result_ready.emit(f"{'Start':>7}  {'End':>7}  {'Note':<6}  {'MIDI':>4}  {'Velocity':>8}")
         self.result_ready.emit("-" * 45)
 
         for start, end, pitch, velocity in notes:
             note_name = self.midi_to_note_name(pitch)
-            line = f"{start:>6.2f}s  {end:>6.2f}s  {note_name:<6}  {pitch:>4}  {velocity:>8}"
-            self.result_ready.emit(line)
+            self.result_ready.emit(f"{start:>6.2f}s  {end:>6.2f}s  {note_name:<6}  {pitch:>4}  {velocity:>8}")
 
         self.result_ready.emit(f"\nTotal notes detected: {len(notes)}")
 
@@ -237,20 +229,17 @@ class PianoDetectorUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Piano Note Detector (Transkun)")
-        self.setFixedSize(550, 750)
+        self.setFixedSize(550, 800)
 
-        # Recording state
         self.is_recording = False
         self.recording_thread = None
         self.processing_thread = None
         self.recording_seconds = 0
         self.current_audio = None
 
-        # Setup UI
         self.setup_dark_theme()
         self.create_widgets()
 
-        # Timer for updating recording time
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_timer)
 
@@ -278,87 +267,48 @@ class PianoDetectorUI(QMainWindow):
         main_layout.setSpacing(12)
         main_layout.setContentsMargins(20, 20, 20, 20)
 
-        # Title
         title_label = QLabel("Piano Note Detector")
         title_label.setFont(QFont("Helvetica", 20, QFont.Weight.Bold))
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(title_label)
 
-        # Record button
+        btn_style = """
+            QPushButton {
+                background-color: #2a82da; color: white;
+                border: none; border-radius: 5px;
+            }
+            QPushButton:hover { background-color: #3a92ea; }
+            QPushButton:pressed { background-color: #1a72ca; }
+            QPushButton:disabled { background-color: #555555; color: #888888; }
+        """
+
         self.record_button = QPushButton("Start Recording")
         self.record_button.setFont(QFont("Helvetica", 12))
         self.record_button.setMinimumHeight(45)
-        self.record_button.setStyleSheet("""
-            QPushButton {
-                background-color: #2a82da;
-                color: white;
-                border: none;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #3a92ea;
-            }
-            QPushButton:pressed {
-                background-color: #1a72ca;
-            }
-        """)
+        self.record_button.setStyleSheet(btn_style)
         self.record_button.clicked.connect(self.toggle_recording)
         main_layout.addWidget(self.record_button)
 
-        # Load file button
         self.load_button = QPushButton("Load Audio File (.wav / .mp3)")
         self.load_button.setFont(QFont("Helvetica", 12))
         self.load_button.setMinimumHeight(45)
-        self.load_button.setStyleSheet("""
-            QPushButton {
-                background-color: #2a82da;
-                color: white;
-                border: none;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #3a92ea;
-            }
-            QPushButton:pressed {
-                background-color: #1a72ca;
-            }
-        """)
+        self.load_button.setStyleSheet(btn_style)
         self.load_button.clicked.connect(self.load_audio_file)
         main_layout.addWidget(self.load_button)
 
-        # Analyze button
         self.analyze_button = QPushButton("Analyze")
         self.analyze_button.setFont(QFont("Helvetica", 12))
         self.analyze_button.setMinimumHeight(45)
         self.analyze_button.setEnabled(False)
-        self.analyze_button.setStyleSheet("""
-            QPushButton {
-                background-color: #2a82da;
-                color: white;
-                border: none;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #3a92ea;
-            }
-            QPushButton:pressed {
-                background-color: #1a72ca;
-            }
-            QPushButton:disabled {
-                background-color: #555555;
-                color: #888888;
-            }
-        """)
+        self.analyze_button.setStyleSheet(btn_style)
         self.analyze_button.clicked.connect(self.analyze_audio)
         main_layout.addWidget(self.analyze_button)
 
-        # Recording status
         self.status_label = QLabel("Ready to record or load audio file")
         self.status_label.setFont(QFont("Helvetica", 10))
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(self.status_label)
 
-        # Recording time display
         self.time_label = QLabel("00:00")
         self.time_label.setFont(QFont("Helvetica", 28, QFont.Weight.Bold))
         self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -369,17 +319,14 @@ class PianoDetectorUI(QMainWindow):
         device_group = QGroupBox("Device Selection")
         device_group.setFont(QFont("Helvetica", 10))
         device_layout = QHBoxLayout()
-
         self.device_group = QButtonGroup()
         self.cpu_radio = QRadioButton("CPU")
         self.cpu_radio.setFont(QFont("Helvetica", 10))
         self.cpu_radio.setChecked(True)
         self.cuda_radio = QRadioButton("CUDA (GPU)")
         self.cuda_radio.setFont(QFont("Helvetica", 10))
-
         self.device_group.addButton(self.cpu_radio)
         self.device_group.addButton(self.cuda_radio)
-
         device_layout.addWidget(self.cpu_radio)
         device_layout.addWidget(self.cuda_radio)
         device_group.setLayout(device_layout)
@@ -389,29 +336,23 @@ class PianoDetectorUI(QMainWindow):
         velocity_group = QGroupBox("Velocity Options")
         velocity_group.setFont(QFont("Helvetica", 10))
         velocity_layout = QVBoxLayout()
-
         self.original_velocity_radio = QRadioButton("Original velocity")
         self.original_velocity_radio.setFont(QFont("Helvetica", 10))
         self.original_velocity_radio.setChecked(True)
-
         self.fixed_velocity_radio = QRadioButton("Fixed velocity:")
         self.fixed_velocity_radio.setFont(QFont("Helvetica", 10))
-
         self.velocity_spinbox = QSpinBox()
         self.velocity_spinbox.setFont(QFont("Helvetica", 10))
         self.velocity_spinbox.setRange(1, 127)
         self.velocity_spinbox.setValue(100)
         self.velocity_spinbox.setEnabled(False)
-
         self.fixed_velocity_radio.toggled.connect(self.velocity_spinbox.setEnabled)
-
         velocity_layout.addWidget(self.original_velocity_radio)
-        fixed_layout = QHBoxLayout()
-        fixed_layout.addWidget(self.fixed_velocity_radio)
-        fixed_layout.addWidget(self.velocity_spinbox)
-        fixed_layout.addStretch()
-        velocity_layout.addLayout(fixed_layout)
-
+        fixed_vel_layout = QHBoxLayout()
+        fixed_vel_layout.addWidget(self.fixed_velocity_radio)
+        fixed_vel_layout.addWidget(self.velocity_spinbox)
+        fixed_vel_layout.addStretch()
+        velocity_layout.addLayout(fixed_vel_layout)
         velocity_group.setLayout(velocity_layout)
         main_layout.addWidget(velocity_group)
 
@@ -419,52 +360,48 @@ class PianoDetectorUI(QMainWindow):
         pitch_bend_group = QGroupBox("Pitch Bend Options")
         pitch_bend_group.setFont(QFont("Helvetica", 10))
         pitch_bend_layout = QVBoxLayout()
-
         self.original_pitch_bend_radio = QRadioButton("Original pitch bend")
         self.original_pitch_bend_radio.setFont(QFont("Helvetica", 10))
         self.original_pitch_bend_radio.setChecked(True)
-
         self.fixed_pitch_bend_radio = QRadioButton("Fixed pitch bend:")
         self.fixed_pitch_bend_radio.setFont(QFont("Helvetica", 10))
-
         self.pitch_bend_spinbox = QSpinBox()
         self.pitch_bend_spinbox.setFont(QFont("Helvetica", 10))
         self.pitch_bend_spinbox.setRange(-8192, 8191)
         self.pitch_bend_spinbox.setValue(0)
         self.pitch_bend_spinbox.setEnabled(False)
-
         self.fixed_pitch_bend_radio.toggled.connect(self.pitch_bend_spinbox.setEnabled)
-
         pitch_bend_layout.addWidget(self.original_pitch_bend_radio)
         fixed_bend_layout = QHBoxLayout()
         fixed_bend_layout.addWidget(self.fixed_pitch_bend_radio)
         fixed_bend_layout.addWidget(self.pitch_bend_spinbox)
         fixed_bend_layout.addStretch()
         pitch_bend_layout.addLayout(fixed_bend_layout)
-
         pitch_bend_group.setLayout(pitch_bend_layout)
         main_layout.addWidget(pitch_bend_group)
 
-        # Save MIDI option
+        # Sustain pedal + save MIDI options
+        self.extend_check = QCheckBox("Extend notes with sustain pedal (recommended)")
+        self.extend_check.setFont(QFont("Helvetica", 10))
+        self.extend_check.setChecked(True)
+        main_layout.addWidget(self.extend_check)
+
         self.save_midi_check = QCheckBox("Save MIDI file after transcription")
         self.save_midi_check.setFont(QFont("Helvetica", 10))
         self.save_midi_check.setChecked(True)
         main_layout.addWidget(self.save_midi_check)
 
-        # Results text area
+        # Results
         results_group = QGroupBox("Results")
         results_group.setFont(QFont("Helvetica", 10))
         results_layout = QVBoxLayout()
-
         self.results_text = QTextEdit()
         self.results_text.setReadOnly(True)
         self.results_text.setFont(QFont("Courier", 9))
         self.results_text.setStyleSheet("""
             QTextEdit {
-                background-color: #2d2d2d;
-                color: #ffffff;
-                border: 1px solid #3d3d3d;
-                border-radius: 3px;
+                background-color: #2d2d2d; color: #ffffff;
+                border: 1px solid #3d3d3d; border-radius: 3px;
             }
         """)
         results_layout.addWidget(self.results_text)
@@ -484,64 +421,44 @@ class PianoDetectorUI(QMainWindow):
         self.record_button.setText("Stop Recording")
         self.record_button.setStyleSheet("""
             QPushButton {
-                background-color: #da2a2a;
-                color: white;
-                border: none;
-                border-radius: 5px;
+                background-color: #da2a2a; color: white;
+                border: none; border-radius: 5px;
             }
-            QPushButton:hover {
-                background-color: #ea3a3a;
-            }
-            QPushButton:pressed {
-                background-color: #ca1a1a;
-            }
+            QPushButton:hover { background-color: #ea3a3a; }
+            QPushButton:pressed { background-color: #ca1a1a; }
         """)
         self.status_label.setText("Recording... Play now!")
         self.time_label.setText("00:00")
         self.results_text.clear()
         self.analyze_button.setEnabled(False)
 
-        # Start recording thread
         self.recording_thread = RecordingThread()
         self.recording_thread.status_update.connect(self.update_status)
         self.recording_thread.finished.connect(self.on_recording_finished)
         self.recording_thread.start()
-
-        # Start timer
         self.timer.start(1000)
 
     def stop_recording(self):
         self.is_recording = False
         self.timer.stop()
-
         if self.recording_thread:
             self.recording_thread.stop()
-
         self.record_button.setText("Start Recording")
         self.record_button.setStyleSheet("""
             QPushButton {
-                background-color: #2a82da;
-                color: white;
-                border: none;
-                border-radius: 5px;
+                background-color: #2a82da; color: white;
+                border: none; border-radius: 5px;
             }
-            QPushButton:hover {
-                background-color: #3a92ea;
-            }
-            QPushButton:pressed {
-                background-color: #1a72ca;
-            }
+            QPushButton:hover { background-color: #3a92ea; }
+            QPushButton:pressed { background-color: #1a72ca; }
         """)
         self.status_label.setText("Recording stopped. Click Analyze to process.")
 
     def load_audio_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Load Audio File",
-            "",
+            self, "Load Audio File", "",
             "Audio Files (*.wav *.mp3);;WAV Files (*.wav);;MP3 Files (*.mp3);;All Files (*)"
         )
-
         if not file_path:
             return
 
@@ -550,44 +467,41 @@ class PianoDetectorUI(QMainWindow):
         self.analyze_button.setEnabled(False)
 
         try:
-            # Load audio file
             if file_path.lower().endswith('.mp3'):
-                # Convert MP3 to WAV using ffmpeg
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
                     tmp_wav = f.name
-
                 self.status_label.setText("Converting MP3 to WAV...")
                 cmd = ['ffmpeg', '-i', file_path, '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS), '-y', tmp_wav]
                 result = subprocess.run(cmd, capture_output=True, text=True)
-
                 if result.returncode != 0:
                     self.status_label.setText("Error converting MP3. Make sure ffmpeg is installed.")
                     QMessageBox.critical(self, "Error", f"Failed to convert MP3:\n{result.stderr}")
                     if os.path.exists(tmp_wav):
                         os.unlink(tmp_wav)
                     return
-
-                audio, sr = sf.read(tmp_wav, dtype='float32')
+                audio, _ = sf.read(tmp_wav, dtype='float32')
                 os.unlink(tmp_wav)
             else:
-                # Load WAV file directly
                 audio, sr = sf.read(file_path, dtype='float32')
+                if sr != SAMPLE_RATE:
+                    self.status_label.setText(f"Resampling from {sr}Hz to {SAMPLE_RATE}Hz...")
+                    try:
+                        import librosa
+                        if len(audio.shape) > 1:
+                            audio = audio.mean(axis=1)
+                        audio = librosa.resample(audio, orig_sr=sr, target_sr=SAMPLE_RATE)
+                    except ImportError:
+                        QMessageBox.warning(self, "Warning",
+                            f"File is {sr}Hz but librosa is not installed for resampling.\n"
+                            "Install it with: pip install librosa\n"
+                            "Proceeding anyway — accuracy may be reduced.")
 
-            # Resample if necessary
-            if sr != SAMPLE_RATE:
-                self.status_label.setText(f"Resampling from {sr}Hz to {SAMPLE_RATE}Hz...")
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                    tmp_wav = f.name
-                sf.write(tmp_wav, audio, sr)
-                audio, sr = sf.read(tmp_wav, dtype='float32')
-                os.unlink(tmp_wav)
-
-            # Convert to mono if stereo
             if len(audio.shape) > 1:
                 audio = audio.mean(axis=1)
 
             self.current_audio = audio
-            self.status_label.setText("Audio loaded. Click Analyze to process.")
+            duration = len(audio) / SAMPLE_RATE
+            self.status_label.setText(f"Loaded {os.path.basename(file_path)} ({duration:.1f}s). Click Analyze.")
             self.analyze_button.setEnabled(True)
 
         except Exception as e:
@@ -596,7 +510,7 @@ class PianoDetectorUI(QMainWindow):
 
     def analyze_audio(self):
         if self.current_audio is None:
-            QMessageBox.warning(self, "Warning", "No audio loaded. Please record or load an audio file first.")
+            QMessageBox.warning(self, "Warning", "No audio loaded. Please record or load a file first.")
             return
 
         self.analyze_button.setEnabled(False)
@@ -606,16 +520,14 @@ class PianoDetectorUI(QMainWindow):
 
         device = "cpu" if self.cpu_radio.isChecked() else "cuda"
         save_midi = self.save_midi_check.isChecked()
-        fixed_velocity = None
-        fixed_pitch_bend = None
+        extend = self.extend_check.isChecked()
+        fixed_velocity = self.velocity_spinbox.value() if self.fixed_velocity_radio.isChecked() else None
+        fixed_pitch_bend = self.pitch_bend_spinbox.value() if self.fixed_pitch_bend_radio.isChecked() else None
 
-        if self.fixed_velocity_radio.isChecked():
-            fixed_velocity = self.velocity_spinbox.value()
-
-        if self.fixed_pitch_bend_radio.isChecked():
-            fixed_pitch_bend = self.pitch_bend_spinbox.value()
-
-        self.processing_thread = ProcessingThread(self.current_audio, device, save_midi, fixed_velocity, fixed_pitch_bend)
+        self.processing_thread = ProcessingThread(
+            self.current_audio, device, save_midi,
+            fixed_velocity, fixed_pitch_bend, extend
+        )
         self.processing_thread.status_update.connect(self.update_status)
         self.processing_thread.result_ready.connect(self.append_result)
         self.processing_thread.error_occurred.connect(self.show_error)
@@ -634,7 +546,6 @@ class PianoDetectorUI(QMainWindow):
             self.update_status("No audio recorded.")
             self.record_button.setEnabled(True)
             return
-
         self.current_audio = audio
         self.status_label.setText("Recording complete. Click Analyze to process.")
         self.analyze_button.setEnabled(True)
