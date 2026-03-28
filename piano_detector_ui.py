@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import os
 import numpy as np
+from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QRadioButton, QCheckBox, QGroupBox,
@@ -90,7 +91,8 @@ class ProcessingThread(QThread):
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             tmp_wav = f.name
 
-        midi_path = "detected_notes_transkun.mid"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        midi_path = f"detected_notes_{timestamp}.mid"
 
         try:
             sf.write(tmp_wav, self.audio, SAMPLE_RATE)
@@ -145,6 +147,75 @@ class ProcessingThread(QThread):
         except Exception as e:
             self.error_occurred.emit(f"Transkun error: {str(e)}")
             return False
+        
+    def apply_acoustic_sustain(self, midi_path, audio):
+        try:
+            import mido
+        except ImportError:
+            return
+
+        mid = mido.MidiFile(midi_path)
+        sr = SAMPLE_RATE
+        ticks_per_beat = mid.ticks_per_beat
+
+        def get_energy(t, window=0.1):
+            start = int(max(0, (t - window) * sr))
+            end = int(min(len(audio), (t + window) * sr))
+            if start >= end:
+                return 0
+            return float(np.sqrt(np.mean(audio[start:end].flatten() ** 2)))
+
+        for track in mid.tracks:
+            current_tick = 0
+            tempo = 500000
+            pedal_on = False
+            insertions = []
+
+            for msg in track:
+                current_tick += msg.time
+                seconds = mido.tick2second(current_tick, ticks_per_beat, tempo)
+
+                if msg.type == "set_tempo":
+                    tempo = msg.tempo
+
+                elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
+                    energy_at = get_energy(seconds)
+                    energy_after = get_energy(seconds + 0.05)
+
+                    sustained = energy_at > 0 and energy_after / energy_at > 0.5
+
+                    if sustained and not pedal_on:
+                        pedal_on = True
+                        pedal_tick = current_tick
+                        insertions.append(mido.Message(
+                            'control_change', channel=0,
+                            control=64, value=127,
+                            time=pedal_tick
+                        ))
+
+                    elif not sustained and pedal_on:
+                        pedal_on = False
+                        pedal_off_tick = current_tick
+                        insertions.append(mido.Message(
+                            'control_change', channel=0,
+                            control=64, value=0,
+                            time=pedal_off_tick
+                        ))
+
+            if pedal_on:
+                insertions.append(mido.Message(
+                    'control_change', channel=0,
+                    control=64, value=0,
+                    time=current_tick
+                ))
+
+            for msg in insertions:
+                track.append(msg)
+
+            track.sort(key=lambda m: m.time)
+
+        mid.save(midi_path)
+        self.result_ready.emit("Applied acoustic sustain pedal (CC64).")
 
     def apply_fixed_velocity(self, midi_path, velocity):
         try:
