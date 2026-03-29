@@ -1,6 +1,7 @@
 # ignores midi files
 *.mid
 
+__pycache__/
 piano_detector_ui.build/
 piano_detector_ui.dist/
 piano_detector_ui.onefile-build/

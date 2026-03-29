@@ -1,299 +1,26 @@
 import sys
-import sounddevice as sd
-import soundfile as sf
 import subprocess
 import tempfile
 import os
 import numpy as np
-from datetime import datetime
+import soundfile as sf
+import sounddevice as sd
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QRadioButton, QCheckBox, QGroupBox,
-    QTextEdit, QButtonGroup, QMessageBox, QFileDialog, QSpinBox
+    QTextEdit, QButtonGroup, QMessageBox, QFileDialog, QSpinBox,
+    QTabWidget, QSlider
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, QThread, QTimer
 from PyQt6.QtGui import QFont, QPalette, QColor
 
-NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+from recording_thread import RecordingThread
+
 SAMPLE_RATE = 44100
 CHANNELS = 1
+from processing_thread import ProcessingThread, MidiWorker
 
-
-class RecordingThread(QThread):
-    status_update = pyqtSignal(str)
-    finished = pyqtSignal(np.ndarray)
-
-    def __init__(self):
-        super().__init__()
-        self.is_recording = False
-        self.audio_data = []
-
-    def run(self):
-        self.is_recording = True
-        self.audio_data = []
-
-        def callback(indata, frames, time, status):
-            if status:
-                self.status_update.emit(f"Recording status: {status}")
-            if self.is_recording:
-                self.audio_data.append(indata.copy())
-
-        try:
-            stream = sd.InputStream(
-                samplerate=SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype="float32",
-                callback=callback
-            )
-            stream.start()
-
-            while self.is_recording:
-                self.msleep(100)
-
-            stream.stop()
-            stream.close()
-
-            if self.audio_data:
-                audio = np.concatenate(self.audio_data, axis=0)
-                self.finished.emit(audio)
-            else:
-                self.finished.emit(np.array([]))
-
-        except Exception as e:
-            self.status_update.emit(f"Recording error: {str(e)}")
-            self.finished.emit(np.array([]))
-
-    def stop(self):
-        self.is_recording = False
-
-
-class ProcessingThread(QThread):
-    status_update = pyqtSignal(str)
-    result_ready = pyqtSignal(str)
-    error_occurred = pyqtSignal(str)
-    finished = pyqtSignal()
-
-    def __init__(self, audio, device, save_midi, fixed_velocity=None, fixed_pitch_bend=None, extend=False):
-        super().__init__()
-        self.audio = audio
-        self.device = device
-        self.save_midi = save_midi
-        self.fixed_velocity = fixed_velocity
-        self.fixed_pitch_bend = fixed_pitch_bend
-        self.extend = extend
-
-    def run(self):
-        if len(self.audio) == 0:
-            self.status_update.emit("No audio recorded.")
-            self.finished.emit()
-            return
-
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            tmp_wav = f.name
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        midi_path = f"detected_notes_{timestamp}.mid"
-
-        try:
-            sf.write(tmp_wav, self.audio, SAMPLE_RATE)
-            self.status_update.emit("Running Transkun analysis...")
-
-            success = self.run_transkun(tmp_wav, midi_path, self.device)
-
-            if not success:
-                self.status_update.emit("Transcription failed.")
-                return
-
-            self.status_update.emit("Transcription complete!")
-
-            if self.fixed_velocity is not None:
-                self.apply_fixed_velocity(midi_path, self.fixed_velocity)
-
-            if self.fixed_pitch_bend is not None:
-                self.apply_fixed_pitch_bend(midi_path, self.fixed_pitch_bend)
-
-            notes = self.read_midi_notes(midi_path)
-            self.display_notes(notes)
-
-            if self.save_midi:
-                self.result_ready.emit(f"\nMIDI saved to: {midi_path}")
-                self.result_ready.emit("Open it in GarageBand, Logic, or MuseScore.")
-            else:
-                if os.path.exists(midi_path):
-                    os.unlink(midi_path)
-                self.result_ready.emit("\nMIDI file removed.")
-
-        except Exception as e:
-            self.error_occurred.emit(f"Error: {str(e)}")
-        finally:
-            if os.path.exists(tmp_wav):
-                os.unlink(tmp_wav)
-            self.finished.emit()
-
-    def run_transkun(self, wav_path, midi_out_path, device="cpu"):
-        try:
-            import shutil
-            transkun_exe = shutil.which("transkun")
-            if transkun_exe is None:
-                self.error_occurred.emit("Transkun executable not found. Make sure it is installed.")
-                return False
-
-            cmd = [transkun_exe, wav_path, midi_out_path, "--device", device]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                self.error_occurred.emit(f"Transkun error:\n{result.stderr}")
-                return False
-            return True
-        except Exception as e:
-            self.error_occurred.emit(f"Transkun error: {str(e)}")
-            return False
-        
-    def apply_acoustic_sustain(self, midi_path, audio):
-        try:
-            import mido
-        except ImportError:
-            return
-
-        mid = mido.MidiFile(midi_path)
-        sr = SAMPLE_RATE
-        ticks_per_beat = mid.ticks_per_beat
-
-        def get_energy(t, window=0.1):
-            start = int(max(0, (t - window) * sr))
-            end = int(min(len(audio), (t + window) * sr))
-            if start >= end:
-                return 0
-            return float(np.sqrt(np.mean(audio[start:end].flatten() ** 2)))
-
-        for track in mid.tracks:
-            current_tick = 0
-            tempo = 500000
-            pedal_on = False
-            insertions = []
-
-            for msg in track:
-                current_tick += msg.time
-                seconds = mido.tick2second(current_tick, ticks_per_beat, tempo)
-
-                if msg.type == "set_tempo":
-                    tempo = msg.tempo
-
-                elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
-                    energy_at = get_energy(seconds)
-                    energy_after = get_energy(seconds + 0.05)
-
-                    sustained = energy_at > 0 and energy_after / energy_at > 0.5
-
-                    if sustained and not pedal_on:
-                        pedal_on = True
-                        pedal_tick = current_tick
-                        insertions.append(mido.Message(
-                            'control_change', channel=0,
-                            control=64, value=127,
-                            time=pedal_tick
-                        ))
-
-                    elif not sustained and pedal_on:
-                        pedal_on = False
-                        pedal_off_tick = current_tick
-                        insertions.append(mido.Message(
-                            'control_change', channel=0,
-                            control=64, value=0,
-                            time=pedal_off_tick
-                        ))
-
-            if pedal_on:
-                insertions.append(mido.Message(
-                    'control_change', channel=0,
-                    control=64, value=0,
-                    time=current_tick
-                ))
-
-            for msg in insertions:
-                track.append(msg)
-
-            track.sort(key=lambda m: m.time)
-
-        mid.save(midi_path)
-        self.result_ready.emit("Applied acoustic sustain pedal (CC64).")
-
-    def apply_fixed_velocity(self, midi_path, velocity):
-        try:
-            import mido
-        except ImportError:
-            self.error_occurred.emit("Install mido: pip install mido")
-            return
-        mid = mido.MidiFile(midi_path)
-        for track in mid.tracks:
-            for msg in track:
-                if msg.type == "note_on" and msg.velocity > 0:
-                    msg.velocity = velocity
-        mid.save(midi_path)
-        self.result_ready.emit(f"Applied fixed velocity: {velocity}")
-
-    def apply_fixed_pitch_bend(self, midi_path, pitch_bend):
-        try:
-            import mido
-        except ImportError:
-            self.error_occurred.emit("Install mido: pip install mido")
-            return
-        mid = mido.MidiFile(midi_path)
-        for track in mid.tracks:
-            for i in reversed(range(len(track))):
-                if track[i].type == "pitchwheel":
-                    track.pop(i)
-            if len(track) > 0:
-                track.insert(0, mido.Message('pitchwheel', pitch=pitch_bend, time=0))
-        mid.save(midi_path)
-        self.result_ready.emit(f"Applied fixed pitch bend: {pitch_bend}")
-
-    def read_midi_notes(self, midi_path):
-        try:
-            import mido
-        except ImportError:
-            self.error_occurred.emit("Install mido: pip install mido")
-            return []
-
-        mid = mido.MidiFile(midi_path)
-        notes = []
-        tempo = 500000
-        ticks_per_beat = mid.ticks_per_beat
-        active = {}
-
-        for track in mid.tracks:
-            current_tick = 0
-            for msg in track:
-                current_tick += msg.time
-                seconds = mido.tick2second(current_tick, ticks_per_beat, tempo)
-                if msg.type == "set_tempo":
-                    tempo = msg.tempo
-                elif msg.type == "note_on" and msg.velocity > 0:
-                    active[msg.note] = (seconds, msg.velocity)
-                elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
-                    if msg.note in active:
-                        start, vel = active.pop(msg.note)
-                        notes.append((start, seconds, msg.note, vel))
-
-        return sorted(notes, key=lambda n: n[0])
-
-    def midi_to_note_name(self, midi_pitch):
-        name = NOTE_NAMES[int(midi_pitch) % 12]
-        octave = (int(midi_pitch) // 12) - 1
-        return f"{name}{octave}"
-
-    def display_notes(self, notes):
-        if not notes:
-            self.result_ready.emit("No notes detected.")
-            return
-
-        self.result_ready.emit(f"{'Start':>7}  {'End':>7}  {'Note':<6}  {'MIDI':>4}  {'Velocity':>8}")
-        self.result_ready.emit("-" * 45)
-
-        for start, end, pitch, velocity in notes:
-            note_name = self.midi_to_note_name(pitch)
-            self.result_ready.emit(f"{start:>6.2f}s  {end:>6.2f}s  {note_name:<6}  {pitch:>4}  {velocity:>8}")
-
-        self.result_ready.emit(f"\nTotal notes detected: {len(notes)}")
+NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
 
 class PianoDetectorUI(QMainWindow):
@@ -335,6 +62,21 @@ class PianoDetectorUI(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.tabs = QTabWidget()
+        main_layout.addWidget(self.tabs)
+
+        self.main_tab = QWidget()
+        self.tabs.addTab(self.main_tab, "Record & Analyze")
+        self.create_main_tab()
+
+        self.playback_tab = QWidget()
+        self.tabs.addTab(self.playback_tab, "Playback")
+        self.create_playback_tab()
+
+    def create_main_tab(self):
+        main_layout = QVBoxLayout(self.main_tab)
         main_layout.setSpacing(12)
         main_layout.setContentsMargins(20, 20, 20, 20)
 
@@ -386,7 +128,6 @@ class PianoDetectorUI(QMainWindow):
         self.time_label.setStyleSheet("color: #2a82da;")
         main_layout.addWidget(self.time_label)
 
-        # Device selection
         device_group = QGroupBox("Device Selection")
         device_group.setFont(QFont("Helvetica", 10))
         device_layout = QHBoxLayout()
@@ -403,7 +144,6 @@ class PianoDetectorUI(QMainWindow):
         device_group.setLayout(device_layout)
         main_layout.addWidget(device_group)
 
-        # Velocity options
         velocity_group = QGroupBox("Velocity Options")
         velocity_group.setFont(QFont("Helvetica", 10))
         velocity_layout = QVBoxLayout()
@@ -427,7 +167,6 @@ class PianoDetectorUI(QMainWindow):
         velocity_group.setLayout(velocity_layout)
         main_layout.addWidget(velocity_group)
 
-        # Pitch bend options
         pitch_bend_group = QGroupBox("Pitch Bend Options")
         pitch_bend_group.setFont(QFont("Helvetica", 10))
         pitch_bend_layout = QVBoxLayout()
@@ -451,7 +190,6 @@ class PianoDetectorUI(QMainWindow):
         pitch_bend_group.setLayout(pitch_bend_layout)
         main_layout.addWidget(pitch_bend_group)
 
-        # Sustain pedal + save MIDI options
         self.extend_check = QCheckBox("Extend notes with sustain pedal (recommended)")
         self.extend_check.setFont(QFont("Helvetica", 10))
         self.extend_check.setChecked(True)
@@ -462,7 +200,6 @@ class PianoDetectorUI(QMainWindow):
         self.save_midi_check.setChecked(True)
         main_layout.addWidget(self.save_midi_check)
 
-        # Results
         results_group = QGroupBox("Results")
         results_group.setFont(QFont("Helvetica", 10))
         results_layout = QVBoxLayout()
@@ -478,6 +215,237 @@ class PianoDetectorUI(QMainWindow):
         results_layout.addWidget(self.results_text)
         results_group.setLayout(results_layout)
         main_layout.addWidget(results_group)
+
+    def create_playback_tab(self):
+        layout = QVBoxLayout(self.playback_tab)
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        self.playback_mode_group = QButtonGroup()
+        mode_layout = QHBoxLayout()
+        self.audio_mode_radio = QRadioButton("Play audio")
+        self.audio_mode_radio.setFont(QFont("Helvetica", 10))
+        self.audio_mode_radio.setChecked(True)
+        self.midi_mode_radio = QRadioButton("Play MIDI")
+        self.midi_mode_radio.setFont(QFont("Helvetica", 10))
+        self.playback_mode_group.addButton(self.audio_mode_radio)
+        self.playback_mode_group.addButton(self.midi_mode_radio)
+        mode_layout.addWidget(self.audio_mode_radio)
+        mode_layout.addWidget(self.midi_mode_radio)
+        layout.addLayout(mode_layout)
+
+        midi_row = QHBoxLayout()
+        self.midi_path_label = QLabel("No MIDI file selected")
+        self.midi_path_label.setFont(QFont("Helvetica", 10))
+        self.midi_path_label.setStyleSheet("color: #888888;")
+        self.browse_midi_button = QPushButton("Browse")
+        self.browse_midi_button.setFont(QFont("Helvetica", 10))
+        self.browse_midi_button.clicked.connect(self.browse_midi_file)
+        midi_row.addWidget(self.midi_path_label, 1)
+        midi_row.addWidget(self.browse_midi_button)
+        layout.addLayout(midi_row)
+
+        self.playback_slider = QSlider(Qt.Orientation.Horizontal)
+        self.playback_slider.setRange(0, 1000)
+        self.playback_slider.setValue(0)
+        self.playback_slider.sliderMoved.connect(self.on_slider_moved)
+        layout.addWidget(self.playback_slider)
+
+        self.playback_time_label = QLabel("0:00 / 0:00")
+        self.playback_time_label.setFont(QFont("Helvetica", 10))
+        self.playback_time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.playback_time_label)
+
+        btn_style = """
+            QPushButton {
+                background-color: #2a82da; color: white;
+                border: none; border-radius: 5px;
+            }
+            QPushButton:hover { background-color: #3a92ea; }
+            QPushButton:pressed { background-color: #1a72ca; }
+            QPushButton:disabled { background-color: #555555; color: #888888; }
+        """
+        self.play_button = QPushButton("Play")
+        self.play_button.setFont(QFont("Helvetica", 12))
+        self.play_button.setMinimumHeight(45)
+        self.play_button.setStyleSheet(btn_style)
+        self.play_button.clicked.connect(self.toggle_playback)
+        layout.addWidget(self.play_button)
+
+        self.playback_status_label = QLabel("No audio or MIDI loaded")
+        self.playback_status_label.setFont(QFont("Helvetica", 10))
+        self.playback_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.playback_status_label)
+
+        layout.addStretch()
+
+        self.is_playing = False
+        self.playback_stream = None
+        self.playback_position = 0
+        self.current_midi_path = None
+        self._audio_position = 0
+        self._audio_total = 0
+        self._audio_data = None
+
+        self.playback_timer = QTimer()
+        self.playback_timer.timeout.connect(self.update_playback_ui)
+
+    def browse_midi_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select MIDI file", "",
+            "MIDI Files (*.mid *.midi);;All Files (*)"
+        )
+        if path:
+            self.current_midi_path = path
+            self.midi_path_label.setText(os.path.basename(path))
+            self.midi_path_label.setStyleSheet("color: #ffffff;")
+            self.playback_status_label.setText("MIDI file loaded. Press Play.")
+
+    def toggle_playback(self):
+        if self.is_playing:
+            self.stop_playback()
+        else:
+            self.start_playback()
+
+    def start_playback(self):
+        if self.audio_mode_radio.isChecked():
+            if self.current_audio is None:
+                QMessageBox.warning(self, "Warning", "No audio recorded or loaded yet.")
+                return
+            self.play_audio()
+        else:
+            if self.current_midi_path is None:
+                QMessageBox.warning(self, "Warning", "No MIDI file selected. Use Browse to pick one.")
+                return
+            self.play_midi()
+
+    def play_audio(self):
+        audio = self.current_audio
+        if len(audio.shape) == 1:
+            audio = audio.reshape(-1, 1)
+
+        total_samples = len(self.current_audio)
+        start_sample = int(self.playback_position * total_samples)
+        self._audio_position = start_sample
+        self._audio_data = audio
+        self._audio_total = total_samples
+
+        self.is_playing = True
+        self.play_button.setText("Stop")
+        self.playback_status_label.setText("Playing audio...")
+
+        def callback(outdata, frames, time, status):
+            end = self._audio_position + frames
+            chunk = self._audio_data[self._audio_position:end]
+            if len(chunk) == 0:
+                outdata[:] = 0
+                raise sd.CallbackStop()
+            if len(chunk) < frames:
+                outdata[:len(chunk)] = chunk
+                outdata[len(chunk):] = 0
+                raise sd.CallbackStop()
+            else:
+                outdata[:] = chunk
+            self._audio_position = end
+
+        def on_finished():
+            self.is_playing = False
+            self.play_button.setText("Play")
+            self.playback_timer.stop()
+            self.playback_position = 0
+            self.playback_slider.setValue(0)
+            self.playback_status_label.setText("Playback finished.")
+
+        self.playback_stream = sd.OutputStream(
+            samplerate=SAMPLE_RATE,
+            channels=self._audio_data.shape[1],
+            dtype='float32',
+            callback=callback,
+            finished_callback=on_finished
+        )
+        self.playback_stream.start()
+        self.playback_timer.start(200)
+
+    def play_midi(self):
+        try:
+            import pygame
+            import pygame.midi
+        except ImportError:
+            QMessageBox.critical(self, "Error", "pygame is required for MIDI playback.\nInstall it with: pip install pygame")
+            return
+
+        pygame.init()
+        pygame.midi.init()
+
+        self.is_playing = True
+        self.play_button.setText("Stop")
+        self.playback_status_label.setText("Playing MIDI...")
+
+        try:
+            player = pygame.midi.Output(pygame.midi.get_default_output_id())
+            player.set_instrument(0)
+
+            import mido
+            mid = mido.MidiFile(self.current_midi_path)
+            self._midi_player = player
+            self._midi_mid = mid
+
+            def run_midi():
+                for msg in mid.play():
+                    if not self.is_playing:
+                        break
+                    if msg.type == 'note_on':
+                        player.note_on(msg.note, msg.velocity)
+                    elif msg.type == 'note_off':
+                        player.note_off(msg.note, msg.velocity)
+                    elif msg.type == 'control_change':
+                        player.write_short(0xB0, msg.control, msg.value)
+                player.close()
+                pygame.midi.quit()
+                self.is_playing = False
+                self.play_button.setText("Play")
+                self.playback_status_label.setText("MIDI playback finished.")
+
+            self._midi_thread = QThread()
+            self._midi_worker = MidiWorker(run_midi)
+            self._midi_worker.moveToThread(self._midi_thread)
+            self._midi_thread.started.connect(self._midi_worker.run)
+            self._midi_worker.done.connect(self._midi_thread.quit)
+            self._midi_thread.start()
+
+        except Exception as e:
+            self.is_playing = False
+            self.play_button.setText("Play")
+            QMessageBox.critical(self, "Error", f"MIDI playback error: {str(e)}")
+
+    def stop_playback(self):
+        self.is_playing = False
+        self.play_button.setText("Play")
+        self.playback_timer.stop()
+        if self.playback_stream is not None:
+            self.playback_stream.stop()
+            self.playback_stream.close()
+            self.playback_stream = None
+        self.playback_status_label.setText("Playback stopped.")
+
+    def update_playback_ui(self):
+        if self._audio_data is None or not self.is_playing:
+            return
+        total = self._audio_total
+        pos = self._audio_position
+        if total > 0:
+            pct = pos / total
+            self.playback_slider.setValue(int(pct * 1000))
+            elapsed = pos / SAMPLE_RATE
+            total_secs = total / SAMPLE_RATE
+            self.playback_time_label.setText(
+                f"{int(elapsed//60)}:{int(elapsed%60):02d} / {int(total_secs//60)}:{int(total_secs%60):02d}"
+            )
+
+    def on_slider_moved(self, value):
+        self.playback_position = value / 1000.0
+        if self.is_playing:
+            self.stop_playback()
 
     def toggle_recording(self):
         if not self.is_recording:
@@ -563,7 +531,7 @@ class PianoDetectorUI(QMainWindow):
                         audio = librosa.resample(audio, orig_sr=sr, target_sr=SAMPLE_RATE)
                     except ImportError:
                         QMessageBox.warning(self, "Warning",
-                            f"File is {sr}Hz but librosa is not installed for resampling.\n"
+                            f"File is {sr}Hz but librosa is not installed.\n"
                             "Install it with: pip install librosa\n"
                             "Proceeding anyway — accuracy may be reduced.")
 
@@ -603,7 +571,14 @@ class PianoDetectorUI(QMainWindow):
         self.processing_thread.result_ready.connect(self.append_result)
         self.processing_thread.error_occurred.connect(self.show_error)
         self.processing_thread.finished.connect(self.on_processing_finished)
+        self.processing_thread.midi_ready.connect(self.on_midi_ready)
         self.processing_thread.start()
+
+    def on_midi_ready(self, midi_path):
+        self.current_midi_path = midi_path
+        self.midi_path_label.setText(os.path.basename(midi_path))
+        self.midi_path_label.setStyleSheet("color: #ffffff;")
+        self.playback_status_label.setText("MIDI ready. Switch to Playback tab.")
 
     def update_timer(self):
         if self.is_recording:
@@ -627,6 +602,7 @@ class PianoDetectorUI(QMainWindow):
         self.load_button.setEnabled(True)
         self.analyze_button.setEnabled(True)
         self.status_label.setText("Ready to record or load audio file")
+        self.tabs.setCurrentIndex(1)
 
     def update_status(self, message):
         self.status_label.setText(message)
@@ -637,14 +613,3 @@ class PianoDetectorUI(QMainWindow):
     def show_error(self, message):
         self.results_text.append(f"ERROR: {message}")
         QMessageBox.critical(self, "Error", message)
-
-
-def main():
-    app = QApplication(sys.argv)
-    window = PianoDetectorUI()
-    window.show()
-    sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    main()
