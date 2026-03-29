@@ -6,12 +6,10 @@ maybe some redundant checks to make sure everything is working
 sending to fl studio or other daws (lowk hard)
 
 UI
-Waveform display (for fun)
+Waveform display (for fun) (audio playback)
 progress indictor (to show how much transkun has done)
-piano roll display (for fun again)
 
 QOL
-Playback button
 input device selector (mic or other)
 output location (currently it is in the folder)
 batch processing (multiple files at once)
@@ -19,4 +17,7 @@ batch processing (multiple files at once)
 Music Theory
 key detection 
 
-
+Known Bugs
+if the .wav and .mp3 aint 44100Hz, transkun will not analysis. 
+the fake sustain pedal is messing with the midi file too much, made it push all the notes to the start of the track.
+piano roll display is not fully animated (slider isn't sliding and piano roll ain't moving toward the piano ;-;)

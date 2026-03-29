@@ -69,7 +69,7 @@ class ProcessingThread(QThread):
             if self.fixed_pitch_bend is not None:
                 self.apply_fixed_pitch_bend(midi_path, self.fixed_pitch_bend)
 
-            self.apply_acoustic_sustain(midi_path, self.audio)
+            # self.apply_acoustic_sustain(midi_path, self.audio)
 
             notes = self.read_midi_notes(midi_path)
             self.display_notes(notes)
@@ -105,7 +105,9 @@ class ProcessingThread(QThread):
         except Exception as e:
             self.error_occurred.emit(f"Transkun error: {str(e)}")
             return False
-
+        
+    # something is wrong here
+    '''
     def apply_acoustic_sustain(self, midi_path, audio):
         try:
             import mido
@@ -168,7 +170,7 @@ class ProcessingThread(QThread):
 
         mid.save(midi_path)
         self.result_ready.emit("Applied acoustic sustain pedal (CC64).")
-
+    '''
     def apply_fixed_velocity(self, midi_path, velocity):
         try:
             import mido

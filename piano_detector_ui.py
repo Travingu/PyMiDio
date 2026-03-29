@@ -9,149 +9,271 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QRadioButton, QCheckBox, QGroupBox,
     QTextEdit, QButtonGroup, QMessageBox, QFileDialog, QSpinBox,
-    QTabWidget, QSlider
+    QSlider, QSplitter, QFrame, QScrollArea
 )
 from PyQt6.QtCore import Qt, QThread, QTimer
-from PyQt6.QtGui import QFont, QPalette, QColor
+from PyQt6.QtGui import QFont, QPalette, QColor, QScreen
 
-from recording_thread import RecordingThread
-
-SAMPLE_RATE = 44100
-CHANNELS = 1
+from recording_thread import RecordingThread, SAMPLE_RATE, CHANNELS
 from processing_thread import ProcessingThread, MidiWorker
+from piano_roll_widget import PianoRollWidget
 
 NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+
+
+def btn_style(bg="#2a82da", hover="#3a92ea", pressed="#1a72ca"):
+    return f"""
+        QPushButton {{
+            background-color: {bg}; color: white;
+            border: none; border-radius: 6px;
+            padding: 8px;
+        }}
+        QPushButton:hover {{ background-color: {hover}; }}
+        QPushButton:pressed {{ background-color: {pressed}; }}
+        QPushButton:disabled {{ background-color: #444444; color: #777777; }}
+    """
 
 
 class PianoDetectorUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Piano Note Detector (Transkun)")
-        self.setFixedSize(550, 800)
+        self.setWindowTitle("Piano Note Detector — Transkun")
 
         self.is_recording = False
         self.recording_thread = None
         self.processing_thread = None
         self.recording_seconds = 0
         self.current_audio = None
+        self.is_playing = False
+        self.playback_stream = None
+        self.playback_position = 0.0
+        self.current_midi_path = None
+        self._audio_position = 0
+        self._audio_total = 0
+        self._audio_data = None
 
         self.setup_dark_theme()
-        self.create_widgets()
+        self.setup_ui()
 
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_timer)
 
+        self.playback_timer = QTimer()
+        self.playback_timer.timeout.connect(self.update_playback_ui)
+
+        self.showMaximized()
+
     def setup_dark_theme(self):
         palette = QPalette()
-        palette.setColor(QPalette.ColorRole.Window, QColor(30, 30, 30))
-        palette.setColor(QPalette.ColorRole.WindowText, QColor(255, 255, 255))
-        palette.setColor(QPalette.ColorRole.Base, QColor(45, 45, 45))
-        palette.setColor(QPalette.ColorRole.AlternateBase, QColor(50, 50, 50))
-        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(25, 25, 25))
-        palette.setColor(QPalette.ColorRole.ToolTipText, QColor(255, 255, 255))
-        palette.setColor(QPalette.ColorRole.Text, QColor(255, 255, 255))
-        palette.setColor(QPalette.ColorRole.Button, QColor(50, 50, 50))
-        palette.setColor(QPalette.ColorRole.ButtonText, QColor(255, 255, 255))
-        palette.setColor(QPalette.ColorRole.BrightText, QColor(255, 0, 0))
-        palette.setColor(QPalette.ColorRole.Link, QColor(42, 130, 218))
+        palette.setColor(QPalette.ColorRole.Window, QColor(22, 22, 30))
+        palette.setColor(QPalette.ColorRole.WindowText, QColor(220, 220, 230))
+        palette.setColor(QPalette.ColorRole.Base, QColor(30, 30, 40))
+        palette.setColor(QPalette.ColorRole.AlternateBase, QColor(35, 35, 45))
+        palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(20, 20, 28))
+        palette.setColor(QPalette.ColorRole.ToolTipText, QColor(220, 220, 230))
+        palette.setColor(QPalette.ColorRole.Text, QColor(220, 220, 230))
+        palette.setColor(QPalette.ColorRole.Button, QColor(35, 35, 48))
+        palette.setColor(QPalette.ColorRole.ButtonText, QColor(220, 220, 230))
         palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
-        palette.setColor(QPalette.ColorRole.HighlightedText, QColor(0, 0, 0))
+        palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
         QApplication.setPalette(palette)
 
-    def create_widgets(self):
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(0, 0, 0, 0)
+    def setup_ui(self):
+        root = QWidget()
+        self.setCentralWidget(root)
+        root_layout = QVBoxLayout(root)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
 
-        self.tabs = QTabWidget()
-        main_layout.addWidget(self.tabs)
+        # Title bar
+        title_bar = QWidget()
+        title_bar.setFixedHeight(52)
+        title_bar.setStyleSheet("background: #12121a; border-bottom: 1px solid #2a2a3a;")
+        title_layout = QHBoxLayout(title_bar)
+        title_layout.setContentsMargins(24, 0, 24, 0)
+        title_lbl = QLabel("Piano Note Detector")
+        title_lbl.setFont(QFont("Helvetica", 16, QFont.Weight.Bold))
+        title_lbl.setStyleSheet("color: #ffffff;")
+        title_layout.addWidget(title_lbl)
+        title_layout.addStretch()
+        root_layout.addWidget(title_bar)
 
-        self.main_tab = QWidget()
-        self.tabs.addTab(self.main_tab, "Record & Analyze")
-        self.create_main_tab()
+        # Main splitter
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setStyleSheet("QSplitter::handle { background: #2a2a3a; width: 2px; }")
+        root_layout.addWidget(splitter)
 
-        self.playback_tab = QWidget()
-        self.tabs.addTab(self.playback_tab, "Playback")
-        self.create_playback_tab()
+        # ── LEFT PANEL ──────────────────────────────────────────
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_scroll.setStyleSheet("background: #16161e;")
 
-    def create_main_tab(self):
-        main_layout = QVBoxLayout(self.main_tab)
-        main_layout.setSpacing(12)
-        main_layout.setContentsMargins(20, 20, 20, 20)
+        left = QWidget()
+        left.setStyleSheet("background: #16161e;")
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(24, 24, 24, 24)
+        left_layout.setSpacing(14)
+        left_scroll.setWidget(left)
 
-        title_label = QLabel("Piano Note Detector")
-        title_label.setFont(QFont("Helvetica", 20, QFont.Weight.Bold))
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        main_layout.addWidget(title_label)
+        # Section label
+        def section_label(text):
+            l = QLabel(text)
+            l.setFont(QFont("Helvetica", 11, QFont.Weight.Bold))
+            l.setStyleSheet("color: #6a6a8a; letter-spacing: 1px; margin-top: 8px;")
+            return l
 
-        btn_style = """
-            QPushButton {
-                background-color: #2a82da; color: white;
-                border: none; border-radius: 5px;
-            }
-            QPushButton:hover { background-color: #3a92ea; }
-            QPushButton:pressed { background-color: #1a72ca; }
-            QPushButton:disabled { background-color: #555555; color: #888888; }
-        """
+        left_layout.addWidget(section_label("RECORDING"))
 
         self.record_button = QPushButton("Start Recording")
-        self.record_button.setFont(QFont("Helvetica", 12))
-        self.record_button.setMinimumHeight(45)
-        self.record_button.setStyleSheet(btn_style)
+        self.record_button.setFont(QFont("Helvetica", 13))
+        self.record_button.setMinimumHeight(50)
+        self.record_button.setStyleSheet(btn_style())
         self.record_button.clicked.connect(self.toggle_recording)
-        main_layout.addWidget(self.record_button)
+        left_layout.addWidget(self.record_button)
 
         self.load_button = QPushButton("Load Audio File (.wav / .mp3)")
         self.load_button.setFont(QFont("Helvetica", 12))
-        self.load_button.setMinimumHeight(45)
-        self.load_button.setStyleSheet(btn_style)
+        self.load_button.setMinimumHeight(44)
+        self.load_button.setStyleSheet(btn_style("#2a2a3a", "#3a3a4a", "#1a1a2a"))
         self.load_button.clicked.connect(self.load_audio_file)
-        main_layout.addWidget(self.load_button)
+        left_layout.addWidget(self.load_button)
 
-        self.analyze_button = QPushButton("Analyze")
-        self.analyze_button.setFont(QFont("Helvetica", 12))
-        self.analyze_button.setMinimumHeight(45)
-        self.analyze_button.setEnabled(False)
-        self.analyze_button.setStyleSheet(btn_style)
-        self.analyze_button.clicked.connect(self.analyze_audio)
-        main_layout.addWidget(self.analyze_button)
-
-        self.status_label = QLabel("Ready to record or load audio file")
+        self.status_label = QLabel("Ready to record or load audio")
         self.status_label.setFont(QFont("Helvetica", 10))
+        self.status_label.setStyleSheet("color: #8888aa;")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        main_layout.addWidget(self.status_label)
+        left_layout.addWidget(self.status_label)
 
         self.time_label = QLabel("00:00")
-        self.time_label.setFont(QFont("Helvetica", 28, QFont.Weight.Bold))
+        self.time_label.setFont(QFont("Helvetica", 36, QFont.Weight.Bold))
         self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.time_label.setStyleSheet("color: #2a82da;")
-        main_layout.addWidget(self.time_label)
+        left_layout.addWidget(self.time_label)
 
-        device_group = QGroupBox("Device Selection")
+        left_layout.addWidget(section_label("ANALYSIS"))
+
+        self.analyze_button = QPushButton("Analyze")
+        self.analyze_button.setFont(QFont("Helvetica", 13))
+        self.analyze_button.setMinimumHeight(50)
+        self.analyze_button.setEnabled(False)
+        self.analyze_button.setStyleSheet(btn_style("#1a6a1a", "#2a8a2a", "#0a5a0a"))
+        self.analyze_button.clicked.connect(self.analyze_audio)
+        left_layout.addWidget(self.analyze_button)
+
+        # Device
+        device_group = QGroupBox("Device")
         device_group.setFont(QFont("Helvetica", 10))
+        device_group.setStyleSheet("QGroupBox { color: #aaaacc; border: 1px solid #2a2a3a; border-radius: 6px; margin-top: 6px; padding: 8px; } QGroupBox::title { subcontrol-origin: margin; left: 8px; }")
         device_layout = QHBoxLayout()
         self.device_group = QButtonGroup()
         self.cpu_radio = QRadioButton("CPU")
         self.cpu_radio.setFont(QFont("Helvetica", 10))
         self.cpu_radio.setChecked(True)
+        self.cpu_radio.setStyleSheet("""
+            QRadioButton {
+                color: #aaaacc;
+                spacing: 8px;
+            }
+            QRadioButton::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 9px;
+                border: 2px solid #6a6a8a;
+                background: transparent;
+            }
+            QRadioButton::indicator:checked {
+                background-color: #2a82da;
+                border: 2px solid #ffffff;
+            }
+            QRadioButton::indicator:unchecked {
+                background: transparent;
+                border: 2px solid #6a6a8a;
+            }
+        """)
         self.cuda_radio = QRadioButton("CUDA (GPU)")
         self.cuda_radio.setFont(QFont("Helvetica", 10))
+        self.cuda_radio.setStyleSheet("""
+            QRadioButton {
+                color: #aaaacc;
+                spacing: 8px;
+            }
+            QRadioButton::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 9px;
+                border: 2px solid #6a6a8a;
+                background: transparent;
+            }
+            QRadioButton::indicator:checked {
+                background-color: #2a82da;
+                border: 2px solid #ffffff;
+            }
+            QRadioButton::indicator:unchecked {
+                background: transparent;
+                border: 2px solid #6a6a8a;
+            }
+        """)
         self.device_group.addButton(self.cpu_radio)
         self.device_group.addButton(self.cuda_radio)
         device_layout.addWidget(self.cpu_radio)
         device_layout.addWidget(self.cuda_radio)
         device_group.setLayout(device_layout)
-        main_layout.addWidget(device_group)
+        left_layout.addWidget(device_group)
 
-        velocity_group = QGroupBox("Velocity Options")
+        # Velocity
+        velocity_group = QGroupBox("Velocity")
         velocity_group.setFont(QFont("Helvetica", 10))
+        velocity_group.setStyleSheet(device_group.styleSheet())
         velocity_layout = QVBoxLayout()
-        self.original_velocity_radio = QRadioButton("Original velocity")
+        self.original_velocity_radio = QRadioButton("Original")
         self.original_velocity_radio.setFont(QFont("Helvetica", 10))
         self.original_velocity_radio.setChecked(True)
-        self.fixed_velocity_radio = QRadioButton("Fixed velocity:")
+        self.original_velocity_radio.setStyleSheet("""
+            QRadioButton {
+                color: #aaaacc;
+                spacing: 8px;
+            }
+            QRadioButton::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 9px;
+                border: 2px solid #6a6a8a;
+                background: transparent;
+            }
+            QRadioButton::indicator:checked {
+                background-color: #2a82da;
+                border: 2px solid #ffffff;
+            }
+            QRadioButton::indicator:unchecked {
+                background: transparent;
+                border: 2px solid #6a6a8a;
+            }
+        """)
+        self.fixed_velocity_radio = QRadioButton("Fixed:")
         self.fixed_velocity_radio.setFont(QFont("Helvetica", 10))
+        self.fixed_velocity_radio.setStyleSheet("""
+            QRadioButton {
+                color: #aaaacc;
+                spacing: 8px;
+            }
+            QRadioButton::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 9px;
+                border: 2px solid #6a6a8a;
+                background: transparent;
+            }
+            QRadioButton::indicator:checked {
+                background-color: #2a82da;
+                border: 2px solid #ffffff;
+            }
+            QRadioButton::indicator:unchecked {
+                background: transparent;
+                border: 2px solid #6a6a8a;
+            }
+        """)
         self.velocity_spinbox = QSpinBox()
         self.velocity_spinbox.setFont(QFont("Helvetica", 10))
         self.velocity_spinbox.setRange(1, 127)
@@ -159,136 +281,429 @@ class PianoDetectorUI(QMainWindow):
         self.velocity_spinbox.setEnabled(False)
         self.fixed_velocity_radio.toggled.connect(self.velocity_spinbox.setEnabled)
         velocity_layout.addWidget(self.original_velocity_radio)
-        fixed_vel_layout = QHBoxLayout()
-        fixed_vel_layout.addWidget(self.fixed_velocity_radio)
-        fixed_vel_layout.addWidget(self.velocity_spinbox)
-        fixed_vel_layout.addStretch()
-        velocity_layout.addLayout(fixed_vel_layout)
+        fv = QHBoxLayout()
+        fv.addWidget(self.fixed_velocity_radio)
+        fv.addWidget(self.velocity_spinbox)
+        fv.addStretch()
+        velocity_layout.addLayout(fv)
         velocity_group.setLayout(velocity_layout)
-        main_layout.addWidget(velocity_group)
+        left_layout.addWidget(velocity_group)
 
-        pitch_bend_group = QGroupBox("Pitch Bend Options")
-        pitch_bend_group.setFont(QFont("Helvetica", 10))
-        pitch_bend_layout = QVBoxLayout()
-        self.original_pitch_bend_radio = QRadioButton("Original pitch bend")
+        # Pitch bend
+        pitch_group = QGroupBox("Pitch Bend")
+        pitch_group.setFont(QFont("Helvetica", 10))
+        pitch_group.setStyleSheet(device_group.styleSheet())
+        pitch_layout = QVBoxLayout()
+        self.original_pitch_bend_radio = QRadioButton("Original")
         self.original_pitch_bend_radio.setFont(QFont("Helvetica", 10))
         self.original_pitch_bend_radio.setChecked(True)
-        self.fixed_pitch_bend_radio = QRadioButton("Fixed pitch bend:")
+        self.original_pitch_bend_radio.setStyleSheet("""
+            QRadioButton {
+                color: #aaaacc;
+                spacing: 8px;
+            }
+            QRadioButton::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 9px;
+                border: 2px solid #6a6a8a;
+                background: transparent;
+            }
+            QRadioButton::indicator:checked {
+                background-color: #2a82da;
+                border: 2px solid #ffffff;
+            }
+            QRadioButton::indicator:unchecked {
+                background: transparent;
+                border: 2px solid #6a6a8a;
+            }
+        """)
+        self.fixed_pitch_bend_radio = QRadioButton("Fixed:")
         self.fixed_pitch_bend_radio.setFont(QFont("Helvetica", 10))
+        self.fixed_pitch_bend_radio.setStyleSheet("""
+            QRadioButton {
+                color: #aaaacc;
+                spacing: 8px;
+            }
+            QRadioButton::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 9px;
+                border: 2px solid #6a6a8a;
+                background: transparent;
+            }
+            QRadioButton::indicator:checked {
+                background-color: #2a82da;
+                border: 2px solid #ffffff;
+            }
+            QRadioButton::indicator:unchecked {
+                background: transparent;
+                border: 2px solid #6a6a8a;
+            }
+        """)
         self.pitch_bend_spinbox = QSpinBox()
         self.pitch_bend_spinbox.setFont(QFont("Helvetica", 10))
         self.pitch_bend_spinbox.setRange(-8192, 8191)
         self.pitch_bend_spinbox.setValue(0)
         self.pitch_bend_spinbox.setEnabled(False)
         self.fixed_pitch_bend_radio.toggled.connect(self.pitch_bend_spinbox.setEnabled)
-        pitch_bend_layout.addWidget(self.original_pitch_bend_radio)
-        fixed_bend_layout = QHBoxLayout()
-        fixed_bend_layout.addWidget(self.fixed_pitch_bend_radio)
-        fixed_bend_layout.addWidget(self.pitch_bend_spinbox)
-        fixed_bend_layout.addStretch()
-        pitch_bend_layout.addLayout(fixed_bend_layout)
-        pitch_bend_group.setLayout(pitch_bend_layout)
-        main_layout.addWidget(pitch_bend_group)
+        pitch_layout.addWidget(self.original_pitch_bend_radio)
+        fp = QHBoxLayout()
+        fp.addWidget(self.fixed_pitch_bend_radio)
+        fp.addWidget(self.pitch_bend_spinbox)
+        fp.addStretch()
+        pitch_layout.addLayout(fp)
+        pitch_group.setLayout(pitch_layout)
+        left_layout.addWidget(pitch_group)
 
-        self.extend_check = QCheckBox("Extend notes with sustain pedal (recommended)")
+        self.extend_check = QCheckBox("Sustain pedal detection")
         self.extend_check.setFont(QFont("Helvetica", 10))
         self.extend_check.setChecked(True)
-        main_layout.addWidget(self.extend_check)
+        self.extend_check.setStyleSheet("""
+            QCheckBox {
+                color: #aaaacc;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 4px;
+                border: 2px solid #6a6a8a;
+                background: transparent;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #2a82da;
+                border: 2px solid #ffffff;
+            }
+            QCheckBox::indicator:unchecked {
+                background: transparent;
+                border: 2px solid #6a6a8a;
+            }
+        """)
+        left_layout.addWidget(self.extend_check)
 
-        self.save_midi_check = QCheckBox("Save MIDI file after transcription")
+        self.save_midi_check = QCheckBox("Save MIDI file")
         self.save_midi_check.setFont(QFont("Helvetica", 10))
         self.save_midi_check.setChecked(True)
-        main_layout.addWidget(self.save_midi_check)
+        self.save_midi_check.setStyleSheet("""
+            QCheckBox {
+                color: #aaaacc;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 4px;
+                border: 2px solid #6a6a8a;
+                background: transparent;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #2a82da;
+                border: 2px solid #ffffff;
+            }
+            QCheckBox::indicator:unchecked {
+                background: transparent;
+                border: 2px solid #6a6a8a;
+            }
+        """)
+        left_layout.addWidget(self.save_midi_check)
 
-        results_group = QGroupBox("Results")
-        results_group.setFont(QFont("Helvetica", 10))
-        results_layout = QVBoxLayout()
+        left_layout.addWidget(section_label("RESULTS"))
+
         self.results_text = QTextEdit()
         self.results_text.setReadOnly(True)
         self.results_text.setFont(QFont("Courier", 9))
+        self.results_text.setMinimumHeight(200)
         self.results_text.setStyleSheet("""
             QTextEdit {
-                background-color: #2d2d2d; color: #ffffff;
-                border: 1px solid #3d3d3d; border-radius: 3px;
+                background: #0e0e16; color: #aaaacc;
+                border: 1px solid #2a2a3a; border-radius: 6px;
+                padding: 8px;
             }
         """)
-        results_layout.addWidget(self.results_text)
-        results_group.setLayout(results_layout)
-        main_layout.addWidget(results_group)
+        left_layout.addWidget(self.results_text)
+        left_layout.addStretch()
 
-    def create_playback_tab(self):
-        layout = QVBoxLayout(self.playback_tab)
-        layout.setSpacing(12)
-        layout.setContentsMargins(20, 20, 20, 20)
+        splitter.addWidget(left_scroll)
 
-        self.playback_mode_group = QButtonGroup()
+        # ── RIGHT PANEL ─────────────────────────────────────────
+        right = QWidget()
+        right.setStyleSheet("background: #12121a;")
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(24, 24, 24, 24)
+        right_layout.setSpacing(14)
+
+        right_layout.addWidget(section_label("PLAYBACK"))
+
+        # Mode toggle
         mode_layout = QHBoxLayout()
-        self.audio_mode_radio = QRadioButton("Play audio")
+        self.playback_mode_group = QButtonGroup()
+        self.audio_mode_radio = QRadioButton("Audio")
         self.audio_mode_radio.setFont(QFont("Helvetica", 10))
         self.audio_mode_radio.setChecked(True)
-        self.midi_mode_radio = QRadioButton("Play MIDI")
+        self.audio_mode_radio.setStyleSheet("""
+            QRadioButton {
+                color: #aaaacc;
+                spacing: 8px;
+            }
+            QRadioButton::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 9px;
+                border: 2px solid #6a6a8a;
+                background: transparent;
+            }
+            QRadioButton::indicator:checked {
+                background-color: #2a82da;
+                border: 2px solid #ffffff;
+            }
+            QRadioButton::indicator:unchecked {
+                background: transparent;
+                border: 2px solid #6a6a8a;
+            }
+        """)
+        self.midi_mode_radio = QRadioButton("MIDI")
         self.midi_mode_radio.setFont(QFont("Helvetica", 10))
+        self.midi_mode_radio.setStyleSheet("""
+            QRadioButton {
+                color: #aaaacc;
+                spacing: 8px;
+            }
+            QRadioButton::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 9px;
+                border: 2px solid #6a6a8a;
+                background: transparent;
+            }
+            QRadioButton::indicator:checked {
+                background-color: #2a82da;
+                border: 2px solid #ffffff;
+            }
+            QRadioButton::indicator:unchecked {
+                background: transparent;
+                border: 2px solid #6a6a8a;
+            }
+        """)
         self.playback_mode_group.addButton(self.audio_mode_radio)
         self.playback_mode_group.addButton(self.midi_mode_radio)
         mode_layout.addWidget(self.audio_mode_radio)
         mode_layout.addWidget(self.midi_mode_radio)
-        layout.addLayout(mode_layout)
+        mode_layout.addStretch()
+        right_layout.addLayout(mode_layout)
 
+        # MIDI browse row
         midi_row = QHBoxLayout()
         self.midi_path_label = QLabel("No MIDI file selected")
         self.midi_path_label.setFont(QFont("Helvetica", 10))
-        self.midi_path_label.setStyleSheet("color: #888888;")
+        self.midi_path_label.setStyleSheet("color: #666688;")
         self.browse_midi_button = QPushButton("Browse")
         self.browse_midi_button.setFont(QFont("Helvetica", 10))
+        self.browse_midi_button.setFixedWidth(80)
+        self.browse_midi_button.setStyleSheet(btn_style("#2a2a3a", "#3a3a4a", "#1a1a2a"))
         self.browse_midi_button.clicked.connect(self.browse_midi_file)
         midi_row.addWidget(self.midi_path_label, 1)
         midi_row.addWidget(self.browse_midi_button)
-        layout.addLayout(midi_row)
+        right_layout.addLayout(midi_row)
 
+        # Progress + time
         self.playback_slider = QSlider(Qt.Orientation.Horizontal)
         self.playback_slider.setRange(0, 1000)
         self.playback_slider.setValue(0)
         self.playback_slider.sliderMoved.connect(self.on_slider_moved)
-        layout.addWidget(self.playback_slider)
+        self.playback_slider.setStyleSheet("""
+            QSlider::groove:horizontal { height: 4px; background: #2a2a3a; border-radius: 2px; }
+            QSlider::handle:horizontal { background: #2a82da; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }
+            QSlider::sub-page:horizontal { background: #2a82da; border-radius: 2px; }
+        """)
+        right_layout.addWidget(self.playback_slider)
 
         self.playback_time_label = QLabel("0:00 / 0:00")
         self.playback_time_label.setFont(QFont("Helvetica", 10))
+        self.playback_time_label.setStyleSheet("color: #6666aa;")
         self.playback_time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.playback_time_label)
+        right_layout.addWidget(self.playback_time_label)
 
-        btn_style = """
-            QPushButton {
-                background-color: #2a82da; color: white;
-                border: none; border-radius: 5px;
-            }
-            QPushButton:hover { background-color: #3a92ea; }
-            QPushButton:pressed { background-color: #1a72ca; }
-            QPushButton:disabled { background-color: #555555; color: #888888; }
-        """
+        # Play/stop
         self.play_button = QPushButton("Play")
-        self.play_button.setFont(QFont("Helvetica", 12))
-        self.play_button.setMinimumHeight(45)
-        self.play_button.setStyleSheet(btn_style)
+        self.play_button.setFont(QFont("Helvetica", 13))
+        self.play_button.setMinimumHeight(50)
+        self.play_button.setStyleSheet(btn_style())
         self.play_button.clicked.connect(self.toggle_playback)
-        layout.addWidget(self.play_button)
+        right_layout.addWidget(self.play_button)
 
         self.playback_status_label = QLabel("No audio or MIDI loaded")
         self.playback_status_label.setFont(QFont("Helvetica", 10))
+        self.playback_status_label.setStyleSheet("color: #6666aa;")
         self.playback_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.playback_status_label)
+        right_layout.addWidget(self.playback_status_label)
 
-        layout.addStretch()
+        # Divider
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.HLine)
+        divider.setStyleSheet("color: #2a2a3a;")
+        right_layout.addWidget(divider)
 
-        self.is_playing = False
-        self.playback_stream = None
-        self.playback_position = 0
-        self.current_midi_path = None
-        self._audio_position = 0
-        self._audio_total = 0
-        self._audio_data = None
+        # Piano roll label
+        roll_lbl = QLabel("PIANO ROLL")
+        roll_lbl.setFont(QFont("Helvetica", 11, QFont.Weight.Bold))
+        roll_lbl.setStyleSheet("color: #6a6a8a; letter-spacing: 1px;")
+        right_layout.addWidget(roll_lbl)
 
-        self.playback_timer = QTimer()
-        self.playback_timer.timeout.connect(self.update_playback_ui)
+        # Piano roll
+        self.piano_roll = PianoRollWidget()
+        self.piano_roll.setMinimumHeight(400)
+        right_layout.addWidget(self.piano_roll, 1)
+
+        splitter.addWidget(right)
+
+        # Set splitter proportions — left ~35%, right ~65%
+        splitter.setSizes([350, 650])
+
+    # ── RECORDING ────────────────────────────────────────────────
+
+    def toggle_recording(self):
+        if not self.is_recording:
+            self.start_recording()
+        else:
+            self.stop_recording()
+
+    def start_recording(self):
+        self.is_recording = True
+        self.recording_seconds = 0
+        self.current_audio = None
+        self.record_button.setText("Stop Recording")
+        self.record_button.setStyleSheet(btn_style("#aa2222", "#cc3333", "#881111"))
+        self.status_label.setText("Recording... Play now!")
+        self.time_label.setText("00:00")
+        self.results_text.clear()
+        self.analyze_button.setEnabled(False)
+
+        self.recording_thread = RecordingThread()
+        self.recording_thread.status_update.connect(self.update_status)
+        self.recording_thread.finished.connect(self.on_recording_finished)
+        self.recording_thread.start()
+        self.timer.start(1000)
+
+    def stop_recording(self):
+        self.is_recording = False
+        self.timer.stop()
+        if self.recording_thread:
+            self.recording_thread.stop()
+        self.record_button.setText("Start Recording")
+        self.record_button.setStyleSheet(btn_style())
+        self.status_label.setText("Recording stopped. Click Analyze.")
+
+    def update_timer(self):
+        if self.is_recording:
+            self.recording_seconds += 1
+            m = self.recording_seconds // 60
+            s = self.recording_seconds % 60
+            self.time_label.setText(f"{m:02d}:{s:02d}")
+
+    def on_recording_finished(self, audio):
+        if len(audio) == 0:
+            self.update_status("No audio recorded.")
+            self.record_button.setEnabled(True)
+            return
+        self.current_audio = audio
+        self.status_label.setText("Recording complete. Click Analyze.")
+        self.analyze_button.setEnabled(True)
+        self.record_button.setEnabled(True)
+
+    # ── FILE LOADING ─────────────────────────────────────────────
+
+    def load_audio_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load Audio File", "",
+            "Audio Files (*.wav *.mp3);;WAV Files (*.wav);;MP3 Files (*.mp3);;All Files (*)"
+        )
+        if not file_path:
+            return
+
+        self.results_text.clear()
+        self.status_label.setText(f"Loading: {os.path.basename(file_path)}")
+        self.analyze_button.setEnabled(False)
+
+        try:
+            if file_path.lower().endswith('.mp3'):
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                    tmp_wav = f.name
+                cmd = ['ffmpeg', '-i', file_path, '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS), '-y', tmp_wav]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode != 0:
+                    QMessageBox.critical(self, "Error", f"Failed to convert MP3:\n{result.stderr}")
+                    if os.path.exists(tmp_wav):
+                        os.unlink(tmp_wav)
+                    return
+                audio, _ = sf.read(tmp_wav, dtype='float32')
+                os.unlink(tmp_wav)
+            else:
+                audio, sr = sf.read(file_path, dtype='float32')
+                if sr != SAMPLE_RATE:
+                    try:
+                        import librosa
+                        if len(audio.shape) > 1:
+                            audio = audio.mean(axis=1)
+                        audio = librosa.resample(audio, orig_sr=sr, target_sr=SAMPLE_RATE)
+                    except ImportError:
+                        QMessageBox.warning(self, "Warning",
+                            "librosa not installed — resampling skipped.\npip install librosa")
+
+            if len(audio.shape) > 1:
+                audio = audio.mean(axis=1)
+
+            self.current_audio = audio
+            duration = len(audio) / SAMPLE_RATE
+            self.status_label.setText(f"Loaded ({duration:.1f}s). Click Analyze.")
+            self.analyze_button.setEnabled(True)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to load:\n{str(e)}")
+
+    # ── ANALYSIS ─────────────────────────────────────────────────
+
+    def analyze_audio(self):
+        if self.current_audio is None:
+            QMessageBox.warning(self, "Warning", "No audio loaded.")
+            return
+
+        self.analyze_button.setEnabled(False)
+        self.load_button.setEnabled(False)
+        self.record_button.setEnabled(False)
+        self.status_label.setText("Analyzing...")
+
+        device = "cpu" if self.cpu_radio.isChecked() else "cuda"
+        save_midi = self.save_midi_check.isChecked()
+        extend = self.extend_check.isChecked()
+        fixed_velocity = self.velocity_spinbox.value() if self.fixed_velocity_radio.isChecked() else None
+        fixed_pitch_bend = self.pitch_bend_spinbox.value() if self.fixed_pitch_bend_radio.isChecked() else None
+
+        self.processing_thread = ProcessingThread(
+            self.current_audio, device, save_midi,
+            fixed_velocity, fixed_pitch_bend, extend
+        )
+        self.processing_thread.status_update.connect(self.update_status)
+        self.processing_thread.result_ready.connect(self.append_result)
+        self.processing_thread.error_occurred.connect(self.show_error)
+        self.processing_thread.finished.connect(self.on_processing_finished)
+        self.processing_thread.midi_ready.connect(self.on_midi_ready)
+        self.processing_thread.start()
+
+    def on_processing_finished(self):
+        self.record_button.setEnabled(True)
+        self.load_button.setEnabled(True)
+        self.analyze_button.setEnabled(True)
+        self.status_label.setText("Done. Ready for next recording.")
+
+    def on_midi_ready(self, midi_path):
+        self.current_midi_path = midi_path
+        self.midi_path_label.setText(os.path.basename(midi_path))
+        self.midi_path_label.setStyleSheet("color: #aaaacc;")
+        self.playback_status_label.setText("MIDI ready — press Play.")
+        self.piano_roll.load_midi(midi_path)
+
+    # ── PLAYBACK ─────────────────────────────────────────────────
 
     def browse_midi_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -298,8 +713,9 @@ class PianoDetectorUI(QMainWindow):
         if path:
             self.current_midi_path = path
             self.midi_path_label.setText(os.path.basename(path))
-            self.midi_path_label.setStyleSheet("color: #ffffff;")
-            self.playback_status_label.setText("MIDI file loaded. Press Play.")
+            self.midi_path_label.setStyleSheet("color: #aaaacc;")
+            self.playback_status_label.setText("MIDI loaded — press Play.")
+            self.piano_roll.load_midi(path)
 
     def toggle_playback(self):
         if self.is_playing:
@@ -310,12 +726,12 @@ class PianoDetectorUI(QMainWindow):
     def start_playback(self):
         if self.audio_mode_radio.isChecked():
             if self.current_audio is None:
-                QMessageBox.warning(self, "Warning", "No audio recorded or loaded yet.")
+                QMessageBox.warning(self, "Warning", "No audio loaded.")
                 return
             self.play_audio()
         else:
             if self.current_midi_path is None:
-                QMessageBox.warning(self, "Warning", "No MIDI file selected. Use Browse to pick one.")
+                QMessageBox.warning(self, "Warning", "No MIDI file selected.")
                 return
             self.play_midi()
 
@@ -364,19 +780,18 @@ class PianoDetectorUI(QMainWindow):
             finished_callback=on_finished
         )
         self.playback_stream.start()
-        self.playback_timer.start(200)
+        self.playback_timer.start(100)
 
     def play_midi(self):
         try:
             import pygame
             import pygame.midi
         except ImportError:
-            QMessageBox.critical(self, "Error", "pygame is required for MIDI playback.\nInstall it with: pip install pygame")
+            QMessageBox.critical(self, "Error", "Install pygame: pip install pygame")
             return
 
         pygame.init()
         pygame.midi.init()
-
         self.is_playing = True
         self.play_button.setText("Stop")
         self.playback_status_label.setText("Playing MIDI...")
@@ -388,7 +803,6 @@ class PianoDetectorUI(QMainWindow):
             import mido
             mid = mido.MidiFile(self.current_midi_path)
             self._midi_player = player
-            self._midi_mid = mid
 
             def run_midi():
                 for msg in mid.play():
@@ -412,6 +826,13 @@ class PianoDetectorUI(QMainWindow):
             self._midi_thread.started.connect(self._midi_worker.run)
             self._midi_worker.done.connect(self._midi_thread.quit)
             self._midi_thread.start()
+
+            self._midi_start_time = None
+            self._midi_duration = sum(
+                msg.time for track in mid.tracks for msg in track
+                if hasattr(msg, 'time')
+            )
+            self.playback_timer.start(100)
 
         except Exception as e:
             self.is_playing = False
@@ -439,170 +860,17 @@ class PianoDetectorUI(QMainWindow):
             elapsed = pos / SAMPLE_RATE
             total_secs = total / SAMPLE_RATE
             self.playback_time_label.setText(
-                f"{int(elapsed//60)}:{int(elapsed%60):02d} / {int(total_secs//60)}:{int(total_secs%60):02d}"
+                f"{int(elapsed//60)}:{int(elapsed%60):02d} / "
+                f"{int(total_secs//60)}:{int(total_secs%60):02d}"
             )
+            self.piano_roll.set_time(elapsed)
 
     def on_slider_moved(self, value):
         self.playback_position = value / 1000.0
         if self.is_playing:
             self.stop_playback()
 
-    def toggle_recording(self):
-        if not self.is_recording:
-            self.start_recording()
-        else:
-            self.stop_recording()
-
-    def start_recording(self):
-        self.is_recording = True
-        self.recording_seconds = 0
-        self.current_audio = None
-        self.record_button.setText("Stop Recording")
-        self.record_button.setStyleSheet("""
-            QPushButton {
-                background-color: #da2a2a; color: white;
-                border: none; border-radius: 5px;
-            }
-            QPushButton:hover { background-color: #ea3a3a; }
-            QPushButton:pressed { background-color: #ca1a1a; }
-        """)
-        self.status_label.setText("Recording... Play now!")
-        self.time_label.setText("00:00")
-        self.results_text.clear()
-        self.analyze_button.setEnabled(False)
-
-        self.recording_thread = RecordingThread()
-        self.recording_thread.status_update.connect(self.update_status)
-        self.recording_thread.finished.connect(self.on_recording_finished)
-        self.recording_thread.start()
-        self.timer.start(1000)
-
-    def stop_recording(self):
-        self.is_recording = False
-        self.timer.stop()
-        if self.recording_thread:
-            self.recording_thread.stop()
-        self.record_button.setText("Start Recording")
-        self.record_button.setStyleSheet("""
-            QPushButton {
-                background-color: #2a82da; color: white;
-                border: none; border-radius: 5px;
-            }
-            QPushButton:hover { background-color: #3a92ea; }
-            QPushButton:pressed { background-color: #1a72ca; }
-        """)
-        self.status_label.setText("Recording stopped. Click Analyze to process.")
-
-    def load_audio_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Load Audio File", "",
-            "Audio Files (*.wav *.mp3);;WAV Files (*.wav);;MP3 Files (*.mp3);;All Files (*)"
-        )
-        if not file_path:
-            return
-
-        self.results_text.clear()
-        self.status_label.setText(f"Loading: {os.path.basename(file_path)}")
-        self.analyze_button.setEnabled(False)
-
-        try:
-            if file_path.lower().endswith('.mp3'):
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                    tmp_wav = f.name
-                self.status_label.setText("Converting MP3 to WAV...")
-                cmd = ['ffmpeg', '-i', file_path, '-ar', str(SAMPLE_RATE), '-ac', str(CHANNELS), '-y', tmp_wav]
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                if result.returncode != 0:
-                    self.status_label.setText("Error converting MP3. Make sure ffmpeg is installed.")
-                    QMessageBox.critical(self, "Error", f"Failed to convert MP3:\n{result.stderr}")
-                    if os.path.exists(tmp_wav):
-                        os.unlink(tmp_wav)
-                    return
-                audio, _ = sf.read(tmp_wav, dtype='float32')
-                os.unlink(tmp_wav)
-            else:
-                audio, sr = sf.read(file_path, dtype='float32')
-                if sr != SAMPLE_RATE:
-                    self.status_label.setText(f"Resampling from {sr}Hz to {SAMPLE_RATE}Hz...")
-                    try:
-                        import librosa
-                        if len(audio.shape) > 1:
-                            audio = audio.mean(axis=1)
-                        audio = librosa.resample(audio, orig_sr=sr, target_sr=SAMPLE_RATE)
-                    except ImportError:
-                        QMessageBox.warning(self, "Warning",
-                            f"File is {sr}Hz but librosa is not installed.\n"
-                            "Install it with: pip install librosa\n"
-                            "Proceeding anyway — accuracy may be reduced.")
-
-            if len(audio.shape) > 1:
-                audio = audio.mean(axis=1)
-
-            self.current_audio = audio
-            duration = len(audio) / SAMPLE_RATE
-            self.status_label.setText(f"Loaded {os.path.basename(file_path)} ({duration:.1f}s). Click Analyze.")
-            self.analyze_button.setEnabled(True)
-
-        except Exception as e:
-            self.status_label.setText(f"Error loading file: {str(e)}")
-            QMessageBox.critical(self, "Error", f"Failed to load audio file:\n{str(e)}")
-
-    def analyze_audio(self):
-        if self.current_audio is None:
-            QMessageBox.warning(self, "Warning", "No audio loaded. Please record or load a file first.")
-            return
-
-        self.analyze_button.setEnabled(False)
-        self.load_button.setEnabled(False)
-        self.record_button.setEnabled(False)
-        self.status_label.setText("Analyzing...")
-
-        device = "cpu" if self.cpu_radio.isChecked() else "cuda"
-        save_midi = self.save_midi_check.isChecked()
-        extend = self.extend_check.isChecked()
-        fixed_velocity = self.velocity_spinbox.value() if self.fixed_velocity_radio.isChecked() else None
-        fixed_pitch_bend = self.pitch_bend_spinbox.value() if self.fixed_pitch_bend_radio.isChecked() else None
-
-        self.processing_thread = ProcessingThread(
-            self.current_audio, device, save_midi,
-            fixed_velocity, fixed_pitch_bend, extend
-        )
-        self.processing_thread.status_update.connect(self.update_status)
-        self.processing_thread.result_ready.connect(self.append_result)
-        self.processing_thread.error_occurred.connect(self.show_error)
-        self.processing_thread.finished.connect(self.on_processing_finished)
-        self.processing_thread.midi_ready.connect(self.on_midi_ready)
-        self.processing_thread.start()
-
-    def on_midi_ready(self, midi_path):
-        self.current_midi_path = midi_path
-        self.midi_path_label.setText(os.path.basename(midi_path))
-        self.midi_path_label.setStyleSheet("color: #ffffff;")
-        self.playback_status_label.setText("MIDI ready. Switch to Playback tab.")
-
-    def update_timer(self):
-        if self.is_recording:
-            self.recording_seconds += 1
-            minutes = self.recording_seconds // 60
-            seconds = self.recording_seconds % 60
-            self.time_label.setText(f"{minutes:02d}:{seconds:02d}")
-
-    def on_recording_finished(self, audio):
-        if len(audio) == 0:
-            self.update_status("No audio recorded.")
-            self.record_button.setEnabled(True)
-            return
-        self.current_audio = audio
-        self.status_label.setText("Recording complete. Click Analyze to process.")
-        self.analyze_button.setEnabled(True)
-        self.record_button.setEnabled(True)
-
-    def on_processing_finished(self):
-        self.record_button.setEnabled(True)
-        self.load_button.setEnabled(True)
-        self.analyze_button.setEnabled(True)
-        self.status_label.setText("Ready to record or load audio file")
-        self.tabs.setCurrentIndex(1)
+    # ── HELPERS ──────────────────────────────────────────────────
 
     def update_status(self, message):
         self.status_label.setText(message)
