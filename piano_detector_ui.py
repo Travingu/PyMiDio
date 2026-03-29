@@ -801,7 +801,10 @@ class PianoDetectorUI(QMainWindow):
             player.set_instrument(0)
 
             import mido
+            import time
             mid = mido.MidiFile(self.current_midi_path)
+            self._midi_total_duration = mid.length
+            self._midi_playback_start = time.time()
             self._midi_player = player
 
             def run_midi():
@@ -814,8 +817,14 @@ class PianoDetectorUI(QMainWindow):
                         player.note_off(msg.note, msg.velocity)
                     elif msg.type == 'control_change':
                         player.write_short(0xB0, msg.control, msg.value)
-                player.close()
-                pygame.midi.quit()
+                try:
+                    player.close()
+                except Exception:
+                    pass
+                try:
+                    pygame.midi.quit()
+                except Exception:
+                    pass
                 self.is_playing = False
                 self.play_button.setText("Play")
                 self.playback_status_label.setText("MIDI playback finished.")
@@ -827,11 +836,6 @@ class PianoDetectorUI(QMainWindow):
             self._midi_worker.done.connect(self._midi_thread.quit)
             self._midi_thread.start()
 
-            self._midi_start_time = None
-            self._midi_duration = sum(
-                msg.time for track in mid.tracks for msg in track
-                if hasattr(msg, 'time')
-            )
             self.playback_timer.start(100)
 
         except Exception as e:
@@ -850,25 +854,44 @@ class PianoDetectorUI(QMainWindow):
         self.playback_status_label.setText("Playback stopped.")
 
     def update_playback_ui(self):
-        if self._audio_data is None or not self.is_playing:
+        if not self.is_playing:
             return
-        total = self._audio_total
-        pos = self._audio_position
-        if total > 0:
-            pct = pos / total
-            self.playback_slider.setValue(int(pct * 1000))
-            elapsed = pos / SAMPLE_RATE
-            total_secs = total / SAMPLE_RATE
-            self.playback_time_label.setText(
-                f"{int(elapsed//60)}:{int(elapsed%60):02d} / "
-                f"{int(total_secs//60)}:{int(total_secs%60):02d}"
-            )
+
+        if self.audio_mode_radio.isChecked():
+            if self._audio_data is None:
+                return
+            total = self._audio_total
+            pos = self._audio_position
+            if total > 0:
+                pct = pos / total
+                self.playback_slider.setValue(int(pct * 1000))
+                elapsed = pos / SAMPLE_RATE
+                total_secs = total / SAMPLE_RATE
+                self.playback_time_label.setText(
+                    f"{int(elapsed//60)}:{int(elapsed%60):02d} / "
+                    f"{int(total_secs//60)}:{int(total_secs%60):02d}"
+                )
+                self.piano_roll.set_time(elapsed)
+        else:
+            import time
+            if not hasattr(self, '_midi_playback_start'):
+                self._midi_playback_start = time.time()
+            elapsed = time.time() - self._midi_playback_start
+            if hasattr(self, '_midi_total_duration') and self._midi_total_duration > 0:
+                pct = min(elapsed / self._midi_total_duration, 1.0)
+                self.playback_slider.setValue(int(pct * 1000))
+                self.playback_time_label.setText(
+                    f"{int(elapsed//60)}:{int(elapsed%60):02d} / "
+                    f"{int(self._midi_total_duration//60)}:{int(self._midi_total_duration%60):02d}"
+                )
             self.piano_roll.set_time(elapsed)
 
     def on_slider_moved(self, value):
         self.playback_position = value / 1000.0
         if self.is_playing:
             self.stop_playback()
+            if hasattr(self, '_midi_playback_start'):
+                del self._midi_playback_start
 
     # ── HELPERS ──────────────────────────────────────────────────
 
