@@ -15,7 +15,7 @@ output location (currently it is in the folder)
 batch processing (multiple files at once)
 
 Music Theory
-key detection 
+key detection (lowk another app)
 
 Known Bugs
 if the .wav and .mp3 aint 44100Hz, transkun will not analysis. 
