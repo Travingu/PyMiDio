@@ -11,7 +11,6 @@ progress indictor (to show how much transkun has done)
 
 QOL
 input device selector (mic or other)
-output location (currently it is in the folder)
 batch processing (multiple files at once)
 
 Music Theory

@@ -17,6 +17,7 @@ class MidiWorker(QObject):
     def __init__(self, fn):
         super().__init__()
         self.fn = fn
+        
 
     def run(self):
         self.fn()
@@ -30,7 +31,7 @@ class ProcessingThread(QThread):
     finished = pyqtSignal()
     midi_ready = pyqtSignal(str)
 
-    def __init__(self, audio, device, save_midi, fixed_velocity=None, fixed_pitch_bend=None, extend=False):
+    def __init__(self, audio, device, save_midi, fixed_velocity=None, fixed_pitch_bend=None, extend=False, output_folder=None):
         super().__init__()
         self.audio = audio
         self.device = device
@@ -38,6 +39,7 @@ class ProcessingThread(QThread):
         self.fixed_velocity = fixed_velocity
         self.fixed_pitch_bend = fixed_pitch_bend
         self.extend = extend
+        self.output_folder = output_folder or os.path.dirname(os.path.abspath(__file__))
 
     def run(self):
         if len(self.audio) == 0:
@@ -47,9 +49,9 @@ class ProcessingThread(QThread):
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             tmp_wav = f.name
-
+        
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        midi_path = f"detected_notes_{timestamp}.mid"
+        midi_path = os.path.join(self.output_folder, f"detected_notes_{timestamp}.mid")
 
         try:
             sf.write(tmp_wav, self.audio, SAMPLE_RATE)

@@ -46,6 +46,7 @@ class PianoDetectorUI(QMainWindow):
         self.current_audio = None
         self.is_playing = False
         self.playback_stream = None
+        self.output_folder = os.path.dirname(os.path.abspath(__file__))
         self.playback_position = 0.0
         self.current_midi_path = None
         self._audio_position = 0
@@ -385,28 +386,20 @@ class PianoDetectorUI(QMainWindow):
         self.save_midi_check = QCheckBox("Save MIDI file")
         self.save_midi_check.setFont(QFont("Helvetica", 10))
         self.save_midi_check.setChecked(True)
-        self.save_midi_check.setStyleSheet("""
-            QCheckBox {
-                color: #aaaacc;
-                spacing: 8px;
-            }
-            QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border-radius: 4px;
-                border: 2px solid #6a6a8a;
-                background: transparent;
-            }
-            QCheckBox::indicator:checked {
-                background-color: #2a82da;
-                border: 2px solid #ffffff;
-            }
-            QCheckBox::indicator:unchecked {
-                background: transparent;
-                border: 2px solid #6a6a8a;
-            }
-        """)
         left_layout.addWidget(self.save_midi_check)
+
+        midi_out_row = QHBoxLayout()
+        self.midi_out_label = QLabel("Output: same folder as script")
+        self.midi_out_label.setFont(QFont("Helvetica", 9))
+        self.midi_out_label.setStyleSheet("color: #666688;")
+        self.browse_out_button = QPushButton("Change")
+        self.browse_out_button.setFont(QFont("Helvetica", 9))
+        self.browse_out_button.setFixedWidth(70)
+        self.browse_out_button.setStyleSheet(btn_style("#2a2a3a", "#3a3a4a", "#1a1a2a"))
+        self.browse_out_button.clicked.connect(self.browse_output_folder)
+        midi_out_row.addWidget(self.midi_out_label, 1)
+        midi_out_row.addWidget(self.browse_out_button)
+        left_layout.addLayout(midi_out_row)
 
         left_layout.addWidget(section_label("RESULTS"))
 
@@ -681,8 +674,10 @@ class PianoDetectorUI(QMainWindow):
 
         self.processing_thread = ProcessingThread(
             self.current_audio, device, save_midi,
-            fixed_velocity, fixed_pitch_bend, extend
+            fixed_velocity, fixed_pitch_bend, extend,
+            output_folder=self.output_folder
         )
+        
         self.processing_thread.status_update.connect(self.update_status)
         self.processing_thread.result_ready.connect(self.append_result)
         self.processing_thread.error_occurred.connect(self.show_error)
@@ -716,6 +711,15 @@ class PianoDetectorUI(QMainWindow):
             self.midi_path_label.setStyleSheet("color: #aaaacc;")
             self.playback_status_label.setText("MIDI loaded — press Play.")
             self.piano_roll.load_midi(path)
+
+    def browse_output_folder(self):
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Output Folder", self.output_folder
+        )
+        if folder:
+            self.output_folder = folder
+            self.midi_out_label.setText(f"Output: {folder}")
+            self.midi_out_label.setStyleSheet("color: #aaaacc;")
 
     def toggle_playback(self):
         if self.is_playing:
@@ -892,6 +896,7 @@ class PianoDetectorUI(QMainWindow):
             self.stop_playback()
             if hasattr(self, '_midi_playback_start'):
                 del self._midi_playback_start
+
 
     # ── HELPERS ──────────────────────────────────────────────────
 
