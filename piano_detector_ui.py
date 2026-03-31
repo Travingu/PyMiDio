@@ -37,7 +37,7 @@ def btn_style(bg="#2a82da", hover="#3a92ea", pressed="#1a72ca"):
 class PianoDetectorUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Piano Note Detector — Transkun")
+        self.setWindowTitle("PyMiDio")
 
         self.is_recording = False
         self.recording_thread = None
@@ -92,7 +92,7 @@ class PianoDetectorUI(QMainWindow):
         title_bar.setStyleSheet("background: #12121a; border-bottom: 1px solid #2a2a3a;")
         title_layout = QHBoxLayout(title_bar)
         title_layout.setContentsMargins(24, 0, 24, 0)
-        title_lbl = QLabel("Piano Note Detector")
+        title_lbl = QLabel("PyMiDio")
         title_lbl.setFont(QFont("Helvetica", 16, QFont.Weight.Bold))
         title_lbl.setStyleSheet("color: #ffffff;")
         title_layout.addWidget(title_lbl)
