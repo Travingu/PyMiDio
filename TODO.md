@@ -18,4 +18,3 @@ key detection (lowk another app)
 
 Known Bugs
 if the .wav and .mp3 aint 44100Hz, transkun will not analysis. 
-the fake sustain pedal is messing with the midi file too much, made it push all the notes to the start of the track.
