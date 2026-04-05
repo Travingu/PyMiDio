@@ -16,3 +16,8 @@ pip install librosa
 
 To make sure everything works correctly before it runs (DLLs specifically) (speaking from experience)
 pip install msvc-runtime
+
+IF YOU ARE IMPORTING TO FL STUDIO
+Midi imports do not naturally import CC64 (sustain pedal). It sounds the sustain is not working but it is just FL studio.
+read the link below
+https://forum.image-line.com/viewtopic.php?t=305901

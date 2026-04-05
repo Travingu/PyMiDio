@@ -71,7 +71,7 @@ class ProcessingThread(QThread):
             if self.fixed_pitch_bend is not None:
                 self.apply_fixed_pitch_bend(midi_path, self.fixed_pitch_bend)
 
-            # self.apply_acoustic_sustain(midi_path, self.audio)
+            self.apply_acoustic_sustain(midi_path, self.audio)
 
             notes = self.read_midi_notes(midi_path)
             self.display_notes(notes)
@@ -109,8 +109,8 @@ class ProcessingThread(QThread):
             return False
         
     # something is wrong here
-    '''
     def apply_acoustic_sustain(self, midi_path, audio):
+        print("acoustic sustain is working!")
         try:
             import mido
         except ImportError:
@@ -128,51 +128,64 @@ class ProcessingThread(QThread):
             return float(np.sqrt(np.mean(audio[start:end].flatten() ** 2)))
 
         for track in mid.tracks:
-            current_tick = 0
+            # Convert delta times to absolute ticks
+            abs_tick = 0
+            for msg in track:
+                abs_tick += msg.time
+                msg.time = abs_tick
+
             tempo = 500000
             pedal_on = False
             insertions = []
 
             for msg in track:
-                current_tick += msg.time
-                seconds = mido.tick2second(current_tick, ticks_per_beat, tempo)
-
+                seconds = mido.tick2second(msg.time, ticks_per_beat, tempo)
                 if msg.type == "set_tempo":
                     tempo = msg.tempo
                 elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
                     energy_at = get_energy(seconds)
                     energy_after = get_energy(seconds + 0.05)
-                    sustained = energy_at > 0 and energy_after / energy_at > 0.5
+                    sustained = energy_at > 0 and energy_after / energy_at > 0.2
 
                     if sustained and not pedal_on:
                         pedal_on = True
                         insertions.append(mido.Message(
                             'control_change', channel=0,
                             control=64, value=127,
-                            time=current_tick
+                            time=msg.time
                         ))
                     elif not sustained and pedal_on:
                         pedal_on = False
                         insertions.append(mido.Message(
                             'control_change', channel=0,
                             control=64, value=0,
-                            time=current_tick
+                            time=msg.time
                         ))
 
-            if pedal_on:
+            if pedal_on and track:
+                last_tick = max(msg.time for msg in track)
                 insertions.append(mido.Message(
                     'control_change', channel=0,
                     control=64, value=0,
-                    time=current_tick
+                    time=last_tick
                 ))
 
             for msg in insertions:
                 track.append(msg)
+
+            # Sort by absolute tick
             track.sort(key=lambda m: m.time)
+
+            # Convert back to delta times
+            prev_tick = 0
+            for msg in track:
+                abs_t = msg.time
+                msg.time = abs_t - prev_tick
+                prev_tick = abs_t
 
         mid.save(midi_path)
         self.result_ready.emit("Applied acoustic sustain pedal (CC64).")
-    '''
+
     def apply_fixed_velocity(self, midi_path, velocity):
         try:
             import mido
