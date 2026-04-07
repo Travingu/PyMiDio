@@ -1,5 +1,6 @@
 # ignores midi files
 *.mid
+*.mp4
 
 __pycache__/
 piano_detector_ui.build/

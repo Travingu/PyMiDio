@@ -134,7 +134,7 @@ class PianoDetectorUI(QMainWindow):
         self.record_button.clicked.connect(self.toggle_recording)
         left_layout.addWidget(self.record_button)
 
-        self.load_button = QPushButton("Load Audio File (.wav / .mp3)")
+        self.load_button = QPushButton("Load Audio File (.wav)")
         self.load_button.setFont(QFont("Helvetica", 12))
         self.load_button.setMinimumHeight(44)
         self.load_button.setStyleSheet(btn_style("#2a2a3a", "#3a3a4a", "#1a1a2a"))
@@ -609,7 +609,7 @@ class PianoDetectorUI(QMainWindow):
     def load_audio_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Load Audio File", "",
-            "Audio Files (*.wav *.mp3);;WAV Files (*.wav);;MP3 Files (*.mp3);;All Files (*)"
+            "WAV Files (*.wav)"
         )
         if not file_path:
             return

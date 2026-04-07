@@ -108,7 +108,6 @@ class ProcessingThread(QThread):
             self.error_occurred.emit(f"Transkun error: {str(e)}")
             return False
         
-    # something is wrong here
     def apply_acoustic_sustain(self, midi_path, audio):
         print("acoustic sustain is working!")
         try:
@@ -145,7 +144,7 @@ class ProcessingThread(QThread):
                 elif msg.type == "note_off" or (msg.type == "note_on" and msg.velocity == 0):
                     energy_at = get_energy(seconds)
                     energy_after = get_energy(seconds + 0.05)
-                    sustained = energy_at > 0 and energy_after / energy_at > 0.2
+                    sustained = energy_at > 0 and energy_after / energy_at > 0.2 # 0.2 is the threshold rn
 
                     if sustained and not pedal_on:
                         pedal_on = True
