@@ -1,3 +1,10 @@
+This repository uses Transkun open source model and adds a GUI over the system which allows for recording and other settings
+which are not available to just using Transkun (fixed velocity, pitch bend, sustain). It also includes an Audio and Midi Player (Visual Piano Roll!) as well.
+This allows users to replay audio from either the recorded audio (.wav only) or a selected Midi File. The Midi Player imports the notes onto a visual piano roll which helps users visualize what is being played.
+
+https://github.com/yujia-yan/transkun
+
+Instructions
 go to terminal and run python main.py (for windows idk about mac)
 
 Necessary installations
@@ -5,14 +12,6 @@ pip install pyqt6 sounddevice soundfile numpy mido pygame torch
 
 Transkun
 pip install git+https://github.com/Yujia-Yan/Transkun.git
-
-I got this, idk if it is necessary
-https://aka.ms/vs/17/release/vc_redist.x64.exe
-
-Download ffmpeg if you want to import mp3 files
-
-If you want to make sure that audio files are 44100 Hz (Transkun is trained on 44100 Hz audio)
-pip install librosa
 
 To make sure everything works correctly before it runs (DLLs specifically) (speaking from experience)
 pip install msvc-runtime
