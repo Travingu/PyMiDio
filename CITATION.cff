@@ -1,9 +1,6 @@
-@inproceedings{
-yan2021skipping,
-title={Skipping the Frame-Level: Event-Based Piano Transcription With Neural Semi-{CRF}s},
-author={Yujia Yan and Frank Cwitkowitz and Zhiyao Duan},
-booktitle={Advances in Neural Information Processing Systems},
-editor={A. Beygelzimer and Y. Dauphin and P. Liang and J. Wortman Vaughan},
-year={2021},
-url={https://openreview.net/forum?id=AzB2Pq7UFsA}
+@inproceedings{yan2024scoring,
+  author    = {Yujia Yan and Zhiyao Duan},
+  title     = {Scoring Time Intervals Using Non-Hierarchical Transformer for Automatic Piano Transcription},
+  booktitle = {Proc. International Society for Music Information Retrieval Conference (ISMIR)},
+  year      = {2024},
 }
